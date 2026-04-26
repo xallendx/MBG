@@ -14,7 +14,7 @@ export async function GET() {
 
     // Ambil info user yang pakai kode
     const enriched = await Promise.all(codes.map(async (c) => {
-      let userInfo = null
+      let userInfo: { id: string; username: string; displayName: string | null; role: string } | null = null
       if (c.usedBy) {
         const u = await db.user.findUnique({
           where: { id: c.usedBy },
