@@ -25,8 +25,11 @@ interface Project {
 
 interface Settings {
   timezone?: string; telegramId?: string; telegramName?: string
+  telegramChatId?: string; telegramBotUsername?: string
+  telegramNotifEnabled?: boolean; browserNotifEnabled?: boolean
   autoExpandSiap?: boolean; autoCompleteLink?: boolean
   pomodoroDuration?: number; audioAlertEnabled?: boolean
+  timeFormat?: string
 }
 
 interface TaskTemplate {
@@ -336,17 +339,17 @@ export default function MBGPage() {
       setProjects(Array.isArray(projData) ? projData as Project[] : [])
       const sd = settData as Record<string, unknown>
       setSettings(typeof settData === 'object' && !Array.isArray(settData) ? settData as Settings : {})
-      setFormTimezone(sd.timezone || 'WIB')
+      setFormTimezone(String(sd.timezone || 'WIB'))
       setFormTimeFormat(sd.timeFormat === '12' ? '12' : '24')
       setFormAutoExpandSiap(sd.autoExpandSiap !== false)
       setFormAutoCompleteLink(sd.autoCompleteLink === true)
       setFormTelegramNotif(sd.telegramNotifEnabled !== false)
       setFormBrowserNotif(sd.browserNotifEnabled !== false)
-      setFormPomodoroDuration(sd.pomodoroDuration || 25)
+      setFormPomodoroDuration(Number(sd.pomodoroDuration) || 25)
       setFormAudioAlertEnabled(sd.audioAlertEnabled !== false)
       setTelegramLinked(!!sd.telegramChatId)
-      setTelegramName(sd.telegramName || '')
-      setTelegramBotUsername(sd.telegramBotUsername || '')
+      setTelegramName(String(sd.telegramName || ''))
+      setTelegramBotUsername(String(sd.telegramBotUsername || ''))
       if (!sd.telegramChatId && sd.telegramId) {
         setTelegramLinked(true)
       }
@@ -448,7 +451,7 @@ export default function MBGPage() {
       }
     }
 
-    if (hasNewReady && settings.browserNotifEnabled !== false) {
+    if (hasNewReady && (settings as Record<string, unknown>).browserNotifEnabled !== false) {
       if (newReadyNames.length === 1) {
         sendBrowserNotif('✅ Task Siap!', newReadyNames[0])
         toast('✅ Siap: ' + newReadyNames[0], 'info')
@@ -464,7 +467,7 @@ export default function MBGPage() {
     }
 
     // Notif browser: task hampir siap (masuk zona 2 menit)
-    if (hasAlmostReady && settings.browserNotifEnabled !== false) {
+    if (hasAlmostReady && (settings as Record<string, unknown>).browserNotifEnabled !== false) {
       if (almostReadyNames.length === 1) {
         sendBrowserNotif('⏰ Hampir Siap!', almostReadyNames[0] + ' — kurang dari 2 menit')
         toast('⏰ Hampir siap: ' + almostReadyNames[0], 'info')
@@ -478,7 +481,7 @@ export default function MBGPage() {
       // Audio alert for almost ready
       playAlertAlmostReady()
     }
-  }, [tasks, loading, authenticated, settings.browserNotifEnabled, sendBrowserNotif, playAlertReady, playAlertAlmostReady])
+  }, [tasks, loading, authenticated, (settings as Record<string, unknown>).browserNotifEnabled, sendBrowserNotif, playAlertReady, playAlertAlmostReady])
 
   // Auto-expand projects that have ready tasks (every data refresh, not just first load)
   // Respects the autoExpandSiap setting
@@ -531,9 +534,9 @@ export default function MBGPage() {
   }, [])
 
   /* ===== Time formatting helpers (12h/24h) ===== */
-  const timeOpts = formTimeFormat === '12'
-    ? { hour: '2-digit', minute: '2-digit', hour12: true as const }
-    : { hour: '2-digit', minute: '2-digit', hour12: false as const }
+  const timeOpts: Intl.DateTimeFormatOptions = formTimeFormat === '12'
+    ? { hour: '2-digit', minute: '2-digit', hour12: true }
+    : { hour: '2-digit', minute: '2-digit', hour12: false }
   const fmtTime = (d: Date) => d.toLocaleTimeString('id-ID', timeOpts)
   const fmtDate = (d: Date) => d.toLocaleString('id-ID', { day: '2-digit', month: 'short', ...timeOpts })
   const fmtFull = (d: Date) => d.toLocaleString('id-ID', { day: '2-digit', month: '2-digit', year: 'numeric', ...timeOpts })
@@ -542,8 +545,8 @@ export default function MBGPage() {
   useEffect(() => {
     const update = () => {
       const opts = formTimeFormat === '12'
-        ? { hour: '2-digit', minute: '2-digit', hour12: true }
-        : { hour: '2-digit', minute: '2-digit', hour12: false }
+        ? { hour: '2-digit' as const, minute: '2-digit' as const, hour12: true as const }
+        : { hour: '2-digit' as const, minute: '2-digit' as const, hour12: false as const }
       setCurrentTime(new Date().toLocaleTimeString('id-ID', opts))
     }
     update()
@@ -1170,7 +1173,7 @@ export default function MBGPage() {
   const openDetail = (t: Task) => { if (Date.now() - ctxOpenTimeRef.current < 300) return; detailRef.current = t; setSelectedTaskId(t.id); setDialogType('detail') }
   const openEditProject = (p: Project) => { setFormProjectName(p.name); setFormProjectColor(p.color); setSelectedTaskId(p.id); setDialogType('edit-project') }
   const openAddProject = () => { setFormProjectName(''); setFormProjectColor('#000080'); setDialogType('add-project') }
-  const openSettings = () => { setFormTimezone(settings.timezone || 'WIB'); setFormTimeFormat(settings.timeFormat === '12' ? '12' : '24'); setFormAutoExpandSiap(settings.autoExpandSiap !== false); setFormAutoCompleteLink(settings.autoCompleteLink === true); setFormPomodoroDuration(settings.pomodoroDuration || 25); setFormAudioAlertEnabled(settings.audioAlertEnabled !== false); setDialogType('settings') }
+  const openSettings = () => { const s = settings as Record<string, unknown>; setFormTimezone((s.timezone as string) || 'WIB'); setFormTimeFormat(s.timeFormat === '12' ? '12' : '24'); setFormAutoExpandSiap(s.autoExpandSiap !== false); setFormAutoCompleteLink(s.autoCompleteLink === true); setFormPomodoroDuration((s.pomodoroDuration as number) || 25); setFormAudioAlertEnabled(s.audioAlertEnabled !== false); setDialogType('settings') }
 
   /* ===== Folder toggle ===== */
   const toggleFolder = (projectId: string) => {
@@ -1460,7 +1463,7 @@ export default function MBGPage() {
   const renderRow = (t: Task) => {
     const done = t.status === 'selesai', loading = completingIds.has(t.id)
     /* Fix #13: title attribute for description preview */
-    const titleParts = []
+    const titleParts: string[] = []
     if (t.description) titleParts.push(t.description)
     if (t.notes) titleParts.push(`Catatan: ${t.notes}`)
     const titleAttr = titleParts.length > 0 ? titleParts.join('\n') : undefined
@@ -1649,7 +1652,7 @@ export default function MBGPage() {
     const uc = setConfig
     switch (schedType) {
       case 'harian': return (<div className="schedule-config-area"><div className="win95-field"><label>Cooldown (jam)</label><input type="number" className="win95-input" value={Number(config.cooldownHours || 24)} min={1} max={168} onChange={e => uc('cooldownHours', +e.target.value)} /><div className="hint">Waktu tunggu setelah selesai</div></div></div>)
-      case 'mingguan': return (<div className="schedule-config-area"><div className="win95-field"><label>Hari</label><select className="win95-select" value={config.dayOfWeek ?? 0} onChange={e => uc('dayOfWeek', +e.target.value)}>{DAYS_ID.map((d, i) => <option key={i} value={i}>{d}</option>)}</select></div><div className="win95-field"><label>Cooldown (jam)</label><input type="number" className="win95-input" value={Number(config.cooldownHours || 24)} min={1} max={168} onChange={e => uc('cooldownHours', +e.target.value)} /></div></div>)
+      case 'mingguan': return (<div className="schedule-config-area"><div className="win95-field"><label>Hari</label><select className="win95-select" value={(config.dayOfWeek as number) ?? 0} onChange={e => uc('dayOfWeek', +e.target.value)}>{DAYS_ID.map((d, i) => <option key={i} value={i}>{d}</option>)}</select></div><div className="win95-field"><label>Cooldown (jam)</label><input type="number" className="win95-input" value={Number(config.cooldownHours || 24)} min={1} max={168} onChange={e => uc('cooldownHours', +e.target.value)} /></div></div>)
       case 'jam_tertentu': return (<div className="schedule-config-area"><div className="win95-field"><label>Jam Eksekusi</label><input type="text" className="win95-input" placeholder="09:00, 15:00, 21:00" value={(config.times as string[])?.join(', ') || ''} onChange={e => uc('times', e.target.value.split(',').map(s => s.trim()).filter(Boolean))} /><div className="hint">Format: JJ:MM, pisahkan koma</div></div></div>)
       case 'tanggal_spesifik': return (<div className="schedule-config-area"><div className="win95-field"><label>Tanggal Target</label><textarea className="win95-textarea" rows={2} placeholder="2026-05-01" value={(config.dates as string[])?.join('\n') || ''} onChange={e => uc('dates', e.target.value.split('\n').map(s => s.trim()).filter(Boolean))} /><div className="hint">Format: YYYY-MM-DD — task sekali, tanggal sebagai deadline</div></div></div>)
       case 'kustom': return (<div className="schedule-config-area"><div className="win95-field"><label>Cooldown (jam)</label><input type="number" className="win95-input" value={Number(config.cooldownHours || 24)} min={1} max={8760} onChange={e => uc('cooldownHours', +e.target.value)} /></div></div>)

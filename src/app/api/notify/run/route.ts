@@ -64,7 +64,7 @@ export async function GET() {
 
         try {
           await sendTelegramMessage(
-            telegramChatId,
+            telegramChatId as string | number,
             `⏰ <b>Hampir Siap!</b>\n\n` +
             `📋 ${taskLabel}\n` +
             `⏱ Siap dalam: ${timeText}\n` +
@@ -86,7 +86,7 @@ export async function GET() {
       if (msUntilReady <= 0 && !task.notifiedReadyAt) {
         try {
           await sendTelegramMessage(
-            telegramChatId,
+            telegramChatId as string | number,
             `✅ <b>Task Siap Dikerjakan!</b>\n\n` +
             `📋 ${taskLabel}\n` +
             `👤 ${displayName}`,
