@@ -1,0 +1,110 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_DATABASE_URL")
+}
+
+model User {
+  id           String         @id @default(cuid())
+  username     String         @unique
+  passwordHash String
+  displayName  String?
+  role         String         @default("USER")  // USER, ADMIN
+  isBlocked    Boolean        @default(false)
+  settings     String         @default("{}")
+  telegramId   String?
+  projects     Project[]
+  tasks        Task[]
+  notes        Note[]
+  templates    TaskTemplate[]
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+}
+
+model Project {
+  id       String   @id @default(cuid())
+  userId   String
+  name     String
+  color    String   @default("#000080")
+  position Int      @default(0)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tasks    Task[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Task {
+  id                String    @id @default(cuid())
+  userId            String
+  projectId         String?
+  name              String
+  description       String?
+  link              String?
+  scheduleType      String    @default("sekali")
+  scheduleConfig    String    @default("{}")
+  priority          String    @default("medium")
+  notes             String?
+  pinned            Boolean   @default(false)
+  position          Int       @default(0)
+  notifiedWarnAt    DateTime?
+  notifiedReadyAt   DateTime?
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project           Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  logs              TaskLog[]
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+}
+
+model TaskLog {
+  id          String   @id @default(cuid())
+  taskId      String
+  completedAt DateTime @default(now())
+  task        Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+}
+
+model Note {
+  id        String   @id @default(cuid())
+  userId    String
+  content   String
+  color     String   @default("#FFFFFF")
+  pinned    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model SharedProject {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  projectData String
+  createdBy   String
+  createdAt   DateTime @default(now())
+  accessCount Int      @default(0)
+}
+
+model InviteCode {
+  id        String   @id @default(cuid())
+  code      String   @unique
+  role      String   @default("USER")
+  usedBy    String?
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+}
+
+model TaskTemplate {
+  id             String   @id @default(cuid())
+  userId         String
+  name           String
+  description    String?
+  link           String?
+  scheduleType   String   @default("sekali")
+  scheduleConfig String   @default("{}")
+  priority       String   @default("medium")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}

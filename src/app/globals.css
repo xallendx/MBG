@@ -1,0 +1,1673 @@
+/* ===== MBG Win95 Theme ===== */
+:root {
+  --win95-bg: #c0c0c0;
+  --win95-white: #ffffff;
+  --win95-black: #000000;
+  --win95-light: #dfdfdf;
+  --win95-dark: #808080;
+  --win95-darker: #404040;
+  --win95-title: #000080;
+  --win95-title-inactive: #808080;
+  --win95-title-text: #ffffff;
+  --win95-highlight: #000080;
+  --win95-highlight-text: #ffffff;
+  --win95-siap: #008000;
+  --win95-cd: #808000;
+  --win95-done: #808080;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background: #008080;
+  font-family: 'Tahoma', 'MS Sans Serif', 'Segoe UI', sans-serif;
+  font-size: 16px; /* Base 16px prevents iOS auto-zoom on focus */
+  color: var(--win95-black);
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 10px;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* Desktop container - simulates Win95 desktop */
+.mbg-desktop {
+  width: 100%;
+  max-width: 960px;
+  margin-top: 4px;
+  font-size: 13px; /* Win95 base font size */
+}
+
+/* ===== Win95 Window ===== */
+.win95-window {
+  background: var(--win95-bg);
+  border: 2px solid;
+  border-color: var(--win95-white) var(--win95-darker) var(--win95-darker) var(--win95-white);
+  box-shadow: 1px 1px 0 0 #000;
+}
+
+/* Title bar */
+.win95-titlebar {
+  background: linear-gradient(90deg, var(--win95-title), #1084d0);
+  color: var(--win95-title-text);
+  padding: 2px 3px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  user-select: none;
+  font-weight: bold;
+  font-size: 11px;
+  height: 22px;
+}
+
+.win95-titlebar.inactive {
+  background: linear-gradient(90deg, var(--win95-title-inactive), #b0b0b0);
+}
+
+.win95-titlebar-text {
+  flex: 1;
+  padding-left: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.win95-titlebar-btn {
+  width: 16px;
+  height: 14px;
+  background: var(--win95-bg);
+  border: 1px solid;
+  border-color: var(--win95-white) var(--win95-darker) var(--win95-darker) var(--win95-white);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 8px;
+  font-weight: bold;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+}
+
+.win95-titlebar-btn:active {
+  border-color: var(--win95-darker) var(--win95-white) var(--win95-white) var(--win95-darker);
+}
+
+/* Menu bar */
+.win95-menubar {
+  background: var(--win95-bg);
+  border-bottom: 1px solid var(--win95-dark);
+  padding: 1px 0;
+  display: flex;
+  gap: 0;
+  position: relative;
+  z-index: 200;
+  overflow: visible;
+}
+
+.win95-menubar-item {
+  padding: 2px 8px;
+  cursor: pointer;
+  font-size: 11px;
+  position: relative;
+}
+
+.win95-menubar-item:hover {
+  background: var(--win95-highlight);
+  color: var(--win95-highlight-text);
+}
+
+/* Dropdown menu */
+.win95-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  background: var(--win95-bg);
+  border: 2px solid;
+  border-color: var(--win95-white) var(--win95-darker) var(--win95-darker) var(--win95-white);
+  min-width: 180px;
+  z-index: 300;
+  padding: 2px;
+  box-shadow: 2px 2px 0 0 rgba(0,0,0,0.3);
+}
+
+.win95-dropdown-item {
+  padding: 3px 20px 3px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  font-size: 11px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.win95-dropdown-item:hover {
+  background: var(--win95-highlight);
+  color: var(--win95-highlight-text);
+}
+
+.win95-dropdown-sep {
+  height: 1px;
+  background: var(--win95-dark);
+  border-bottom: 1px solid var(--win95-white);
+  margin: 2px 0;
+}
+
+/* Toolbar */
+.win95-toolbar {
+  background: var(--win95-bg);
+  padding: 2px 4px;
+  display: flex;
+  gap: 2px;
+  align-items: center;
+  border-bottom: 1px solid var(--win95-dark);
+  flex-wrap: wrap;
+}
+
+.win95-toolbar-btn {
+  background: var(--win95-bg);
+  border: 1px solid transparent;
+  padding: 2px 6px;
+  cursor: pointer;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+}
+
+.win95-toolbar-btn:hover {
+  border-color: var(--win95-white) var(--win95-darker) var(--win95-darker) var(--win95-white);
+}
+
+.win95-toolbar-btn:active {
+  border-color: var(--win95-darker) var(--win95-white) var(--win95-white) var(--win95-darker);
+}
+
+.win95-toolbar-sep {
+  width: 1px;
+  height: 20px;
+  border-left: 1px solid var(--win95-dark);
+  border-right: 1px solid var(--win95-white);
+  margin: 0 2px;
+}
+
+/* Content area */
+.win95-content {
+  padding: 0;
+}
+
+/* Group box - Win95 section */
+.win95-group {
+  margin: 4px 6px;
+  position: relative;
+}
+
+.win95-group legend {
+  padding: 0 4px;
+  font-size: 11px;
+  font-weight: bold;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.win95-group legend .count-badge {
+  font-weight: normal;
+  font-size: 10px;
+  background: var(--win95-white);
+  border: 1px solid var(--win95-dark);
+  padding: 0 3px;
+  min-width: 16px;
+  text-align: center;
+}
+
+.win95-group-content {
+  border: 1px solid var(--win95-dark);
+  border-radius: 0;
+  margin-top: -1px;
+  background: var(--win95-white);
+}
+
+/* Task list rows */
+.task-row {
+  display: flex;
+  align-items: center;
+  padding: 4px 6px;
+  border-bottom: 1px solid #e0e0e0;
+  cursor: pointer;
+  gap: 6px;
+  min-height: 28px;
+}
+
+.task-row:last-child {
+  border-bottom: none;
+}
+
+.task-row:hover {
+  background: #e8e8ff;
+}
+
+.task-row.selected {
+  background: var(--win95-highlight);
+  color: var(--win95-highlight-text);
+}
+
+.task-row.selected .task-schedule-info,
+.task-row.selected .task-cd-timer {
+  color: #d0d0ff;
+}
+
+.task-checkbox {
+  width: 13px;
+  height: 13px;
+  appearance: none;
+  -webkit-appearance: none;
+  border: 1px solid;
+  border-color: var(--win95-dark) var(--win95-white) var(--win95-white) var(--win95-dark);
+  background: var(--win95-white);
+  cursor: pointer;
+  flex-shrink: 0;
+  position: relative;
+}
+
+.task-checkbox:checked {
+  background: var(--win95-white);
+}
+
+.task-checkbox:checked::after {
+  content: '✓';
+  position: absolute;
+  top: -2px;
+  left: 1px;
+  font-size: 11px;
+  font-weight: bold;
+  color: var(--win95-black);
+}
+
+.task-name {
+  flex: 1;
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.4;
+  min-width: 0;
+}
+
+.task-schedule-info {
+  font-size: 9px;
+  color: var(--win95-dark);
+  white-space: nowrap;
+  flex-shrink: 0;
+  margin-left: 4px;
+}
+
+.task-cd-timer {
+  font-size: 9px;
+  color: var(--win95-cd);
+  font-weight: bold;
+  white-space: nowrap;
+  flex-shrink: 0;
+  min-width: 44px;
+  text-align: right;
+}
+
+.task-pin {
+  color: #d4a017;
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.task-project-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 0;
+  flex-shrink: 0;
+  border: 1px solid rgba(0,0,0,0.3);
+}
+
+/* Status bar */
+.win95-statusbar {
+  border-top: 1px solid var(--win95-white);
+  padding: 2px 4px;
+  display: flex;
+  gap: 2px;
+}
+
+.win95-statusbar-section {
+  border: 1px solid;
+  border-color: var(--win95-dark) var(--win95-white) var(--win95-white) var(--win95-dark);
+  padding: 1px 6px;
+  font-size: 10px;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.win95-statusbar-section.fixed {
+  flex: 0;
+  min-width: 70px;
+  justify-content: center;
+}
+
+/* ===== Win95 Button ===== */
+.win95-btn {
+  background: var(--win95-bg);
+  border: 2px solid;
+  border-color: var(--win95-white) var(--win95-darker) var(--win95-darker) var(--win95-white);
+  padding: 4px 16px;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: inherit;
+  min-width: 75px;
+  text-align: center;
+}
+
+.win95-btn:active {
+  border-color: var(--win95-darker) var(--win95-white) var(--win95-white) var(--win95-darker);
+  padding: 5px 15px 3px 17px;
+}
+
+.win95-btn.primary {
+  font-weight: bold;
+  outline: 1px solid var(--win95-black);
+}
+
+.win95-btn:disabled {
+  color: var(--win95-dark);
+  text-shadow: 1px 1px 0 var(--win95-white);
+}
+
+/* ===== Win95 Input ===== */
+.win95-input {
+  background: var(--win95-white);
+  border: 2px solid;
+  border-color: var(--win95-dark) var(--win95-white) var(--win95-white) var(--win95-dark);
+  padding: 2px 4px;
+  font-size: 11px;
+  font-family: inherit;
+  width: 100%;
+  outline: none;
+}
+
+.win95-input:focus {
+  outline: none;
+}
+
+.win95-textarea {
+  background: var(--win95-white);
+  border: 2px solid;
+  border-color: var(--win95-dark) var(--win95-white) var(--win95-white) var(--win95-dark);
+  padding: 2px 4px;
+  font-size: 11px;
+  font-family: inherit;
+  width: 100%;
+  outline: none;
+  resize: vertical;
+  min-height: 48px;
+}
+
+.win95-select {
+  background: var(--win95-white);
+  border: 2px solid;
+  border-color: var(--win95-dark) var(--win95-white) var(--win95-white) var(--win95-dark);
+  padding: 2px 4px;
+  font-size: 11px;
+  font-family: inherit;
+  width: 100%;
+  outline: none;
+}
+
+/* ===== Win95 Dialog ===== */
+/* Fix #20: Semi-transparent dialog overlay */
+.win95-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.1);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.win95-dialog {
+  background: var(--win95-bg);
+  border: 2px solid;
+  border-color: var(--win95-white) var(--win95-darker) var(--win95-darker) var(--win95-white);
+  box-shadow: 2px 2px 0 0 rgba(0,0,0,0.5);
+  width: 100%;
+  max-width: 400px;
+  max-height: 85vh;
+  overflow-y: auto;
+}
+
+.win95-dialog-body {
+  padding: 12px 16px;
+}
+
+.win95-dialog-footer {
+  padding: 6px 16px 12px;
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+/* ===== Win95 Tabs ===== */
+.win95-tabs {
+  background: var(--win95-bg);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.win95-tab-bar {
+  display: flex;
+  gap: 0;
+  padding: 0 6px;
+  border-bottom: 1px solid var(--win95-dark);
+}
+
+.win95-tab {
+  background: var(--win95-bg);
+  border: 1px solid var(--win95-dark);
+  border-bottom: none;
+  padding: 3px 12px;
+  cursor: pointer;
+  font-size: 11px;
+  margin-right: -1px;
+  position: relative;
+  top: 1px;
+}
+
+.win95-tab.active {
+  background: var(--win95-white);
+  border-bottom: 1px solid var(--win95-white);
+  font-weight: bold;
+  z-index: 1;
+  padding-bottom: 4px;
+  top: 2px;
+}
+
+/* ===== Form Layout ===== */
+.win95-field {
+  margin-bottom: 8px;
+}
+
+.win95-field label {
+  display: block;
+  font-size: 11px;
+  margin-bottom: 2px;
+  font-weight: bold;
+}
+
+.win95-field .hint {
+  font-size: 10px;
+  color: var(--win95-dark);
+  margin-top: 1px;
+}
+
+.win95-field-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.win95-field-row > .win95-field {
+  flex: 1;
+}
+
+/* ===== Scrollbar (Win95 style) ===== */
+.win95-content::-webkit-scrollbar {
+  width: 16px;
+}
+
+.win95-content::-webkit-scrollbar-track {
+  background: repeating-conic-gradient(var(--win95-bg) 0% 25%, #fff 0% 50%) 0 0 / 2px 2px;
+}
+
+.win95-content::-webkit-scrollbar-thumb {
+  background: var(--win95-bg);
+  border: 1px solid;
+  border-color: var(--win95-white) var(--win95-darker) var(--win95-darker) var(--win95-white);
+}
+
+.win95-content::-webkit-scrollbar-button {
+  background: var(--win95-bg);
+  border: 1px solid;
+  border-color: var(--win95-white) var(--win95-darker) var(--win95-darker) var(--win95-white);
+  height: 16px;
+}
+
+/* ===== Toast ===== */
+.toast-container {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 999;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  pointer-events: none;
+}
+
+.win95-toast {
+  background: var(--win95-bg);
+  border: 2px solid;
+  border-color: var(--win95-white) var(--win95-darker) var(--win95-darker) var(--win95-white);
+  box-shadow: 2px 2px 0 0 rgba(0,0,0,0.3);
+  padding: 4px 12px;
+  font-size: 11px;
+  min-width: 200px;
+  max-width: 300px;
+  animation: toast-in 0.2s ease-out;
+  pointer-events: auto;
+}
+.win95-toast-success { background: #e8f5e9; border-left: 4px solid #2e7d32; }
+.win95-toast-error { background: #ffebee; border-left: 4px solid #c62828; }
+.win95-toast-info { background: var(--win95-bg); }
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ===== Empty state ===== */
+.empty-state {
+  padding: 16px 8px;
+  text-align: center;
+  color: var(--win95-dark);
+  font-size: 11px;
+}
+
+.empty-state .icon {
+  font-size: 24px;
+  margin-bottom: 4px;
+}
+
+/* ===== Section collapse toggle ===== */
+.collapse-toggle {
+  cursor: pointer;
+  user-select: none;
+}
+
+.collapse-toggle::before {
+  content: '▼ ';
+  font-size: 8px;
+}
+
+.collapse-toggle.collapsed::before {
+  content: '▶ ';
+}
+
+/* ===== Responsive ===== */
+@media (min-width: 769px) {
+  /* Laptop/Desktop: scale up everything */
+  .mbg-desktop {
+    max-width: 1100px;
+  }
+  body { font-size: 14px; }
+
+  .win95-titlebar { font-size: 14px; height: 28px; padding: 3px 5px; }
+  .win95-titlebar-btn { width: 22px; height: 20px; font-size: 11px; }
+  .win95-menubar-item { padding: 4px 12px; font-size: 14px; }
+  .win95-dropdown-item { padding: 5px 28px 5px 12px; font-size: 14px; }
+  .win95-dropdown { min-width: 240px; }
+  .win95-toolbar-btn { padding: 4px 10px; font-size: 14px; }
+  .win95-toolbar-sep { height: 26px; }
+  .win95-btn { padding: 6px 24px; font-size: 14px; min-width: 100px; }
+  .win95-input, .win95-select { padding: 5px 8px; font-size: 14px; }
+  .win95-textarea { padding: 5px 8px; font-size: 14px; min-height: 70px; }
+  .win95-field label { font-size: 14px; }
+  .win95-field .hint { font-size: 12px; }
+  .win95-group legend { font-size: 14px; }
+  .win95-group legend .count-badge { font-size: 12px; padding: 0 5px; }
+
+  /* Task rows */
+  .tree-task-row { padding: 8px 12px 8px 24px; gap: 8px; min-height: 42px; }
+  .task-name { font-size: 13px; }
+  .task-schedule-info { font-size: 11px; margin-left: 6px; }
+  .task-cd-timer { font-size: 12px; min-width: 60px; }
+  .task-pin { font-size: 13px; }
+  .task-checkbox { width: 17px; height: 17px; }
+  .task-checkbox:checked::after { font-size: 14px; }
+
+  /* Folder headers */
+  .tree-folder-header { padding: 7px 12px; gap: 10px; min-height: 38px; }
+  .tree-toggle { font-size: 18px; width: 24px; }
+  .tree-folder-color { width: 16px; height: 16px; }
+  .tree-folder-name { font-size: 15px; }
+  .tree-stat { font-size: 12px; }
+  .tree-add-btn { width: 24px; height: 24px; font-size: 15px; }
+  .tree-task-count { font-size: 11px; }
+
+  /* Status groups */
+  .tree-status-header { padding: 4px 10px; font-size: 12px; }
+  .tree-status-header .count-badge { font-size: 11px; min-width: 20px; }
+
+  /* Status bar */
+  .win95-statusbar { padding: 4px 8px; }
+  .win95-statusbar-section { padding: 3px 10px; font-size: 12px; }
+  .win95-statusbar-section.fixed { min-width: 95px; }
+
+  /* Working panel */
+  .working-panel { padding: 10px 12px; }
+  .working-header { font-size: 14px; }
+  .working-link { font-size: 12px; }
+  .working-progress-bar { height: 20px; }
+  .working-timer { font-size: 12px; }
+  .working-done-text { font-size: 14px; }
+
+  /* Dashboard */
+  .dashboard-view { padding: 10px 8px; }
+  .dash-stat-num { font-size: 28px; }
+  .dash-stat-label { font-size: 12px; }
+  .dash-progress-bar-track { height: 24px; }
+  .dash-task-item { padding: 7px 10px; }
+  .dash-task-name { font-size: 14px; }
+  .dash-task-meta { font-size: 12px; }
+  .dash-complete-btn { width: 28px; height: 24px; font-size: 15px; }
+  .dash-project-row { padding: 7px 10px; }
+  .dash-project-name { font-size: 14px; }
+  .dash-project-pct { font-size: 18px; min-width: 50px; }
+  .dash-cd-badge { font-size: 12px; }
+
+  /* Context menu */
+  .win95-context-item { padding: 5px 28px 5px 12px; font-size: 14px; }
+
+  /* Toast */
+  .win95-toast { padding: 7px 18px; font-size: 14px; min-width: 260px; max-width: 420px; }
+
+  /* Help dialog */
+  .help-dialog { max-width: 560px; }
+  .help-section-title { font-size: 14px; }
+  .help-item { font-size: 13px; }
+  .help-key { font-size: 12px; padding: 0 8px; }
+
+  /* Win95 toast */
+  .win95-toast { font-size: 14px; }
+
+  /* Work button */
+  .work-btn { height: 26px; font-size: 12px; padding: 0 10px; }
+  .task-action-btns { gap: 4px; margin-left: 10px; }
+
+  /* Task link button */
+  .task-link-btn { font-size: 13px; }
+
+  /* Dialog */
+  .win95-dialog { max-width: 520px; }
+  .win95-dialog-body { padding: 18px 24px; }
+  .win95-confirm-icon { font-size: 36px; }
+  .win95-confirm-text { font-size: 14px; }
+
+  /* Settings panel */
+  .win95-settings-panel { max-width: 1100px; }
+
+  /* Folder content indent */
+  .tree-folder-content { border-left-width: 18px; margin-left: 12px; }
+  .tree-status-content { margin-left: 16px; }
+
+  /* Filter count */
+  .filter-count { font-size: 11px; }
+
+  /* Win95 tab */
+  .win95-tab { padding: 4px 16px; font-size: 14px; }
+
+  /* Empty state */
+  .empty-state { padding: 20px 12px; font-size: 13px; }
+  .empty-state .icon { font-size: 28px; }
+
+  /* Move dialog */
+  .move-dialog { max-width: 400px; }
+}
+
+/* ===== Tablet breakpoint (401-768px) ===== */
+@media (min-width: 401px) and (max-width: 768px) {
+  .mbg-desktop {
+    max-width: 100%;
+  }
+  .tree-task-row { padding: 7px 10px 7px 22px; gap: 8px; min-height: 44px; }
+  .tree-folder-header { padding: 6px 10px; min-height: 44px; }
+  .task-name { font-size: 12px; }
+  .task-schedule-info { font-size: 10px; }
+  .task-cd-timer { font-size: 11px; }
+  .work-btn { height: 28px; font-size: 11px; padding: 0 8px; min-width: 70px; }
+  .dash-complete-btn { width: 28px; height: 28px; font-size: 14px; }
+  .dash-task-item { padding: 6px 8px; min-height: 44px; }
+  .dash-task-name { font-size: 12px; }
+  .win95-context-item { padding: 8px 20px 8px 12px; font-size: 13px; min-height: 44px; display: flex; align-items: center; }
+  .win95-btn { padding: 6px 18px; font-size: 13px; min-height: 36px; }
+  .win95-menubar-item { padding: 4px 10px; font-size: 13px; min-height: 36px; }
+  .win95-input, .win95-select { padding: 6px 8px; font-size: 13px; min-height: 36px; }
+  .win95-textarea { font-size: 13px; }
+  .win95-titlebar { height: 28px; font-size: 13px; }
+  .win95-titlebar-btn { width: 24px; height: 22px; font-size: 11px; }
+  .win95-statusbar-section { padding: 4px 10px; font-size: 11px; min-height: 32px; display: flex; align-items: center; }
+  .dashboard-view { padding: 8px 6px; }
+  .dash-stat-card { padding: 8px 4px; }
+  .dash-stat-num { font-size: 22px; }
+}
+
+/* ===== Small mobile (≤400px) ===== */
+@media (max-width: 400px) {
+  .task-schedule-info {
+    display: none;
+  }
+  
+  .win95-toolbar-btn span {
+    display: none;
+  }
+
+  /* Touch target: task rows must be at least 44px */
+  .tree-task-row {
+    padding: 8px 8px 8px 14px;
+    gap: 6px;
+    min-height: 44px;
+  }
+
+  /* Touch target: folder headers */
+  .tree-folder-header {
+    padding: 6px 6px;
+    min-height: 44px;
+  }
+
+  /* Touch target: work/action buttons */
+  .work-btn {
+    height: 32px;
+    font-size: 11px;
+    padding: 0 8px;
+    min-width: 60px;
+  }
+  .task-action-btns {
+    gap: 4px;
+    margin-left: 6px;
+  }
+
+  /* Touch target: dashboard task items */
+  .dash-task-item {
+    padding: 6px 6px;
+    min-height: 44px;
+  }
+
+  /* Touch target: dashboard complete buttons */
+  .dash-complete-btn {
+    width: 32px;
+    height: 32px;
+    font-size: 16px;
+  }
+
+  /* Touch target: context menu items */
+  .win95-context-item {
+    padding: 10px 20px 10px 12px;
+    font-size: 13px;
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+  }
+
+  /* Touch target: all buttons */
+  .win95-btn {
+    padding: 8px 14px;
+    font-size: 13px;
+    min-height: 38px;
+  }
+
+  /* Touch target: menu items */
+  .win95-menubar-item {
+    padding: 6px 8px;
+    font-size: 13px;
+    min-height: 38px;
+  }
+
+  /* Touch target: inputs */
+  .win95-input, .win95-select {
+    padding: 8px 6px;
+    font-size: 14px;
+    min-height: 40px;
+  }
+  .win95-textarea {
+    font-size: 14px;
+  }
+
+  /* Title bar */
+  .win95-titlebar {
+    height: 30px;
+    font-size: 12px;
+    padding: 3px 4px;
+  }
+  .win95-titlebar-btn {
+    width: 26px;
+    height: 24px;
+    font-size: 12px;
+  }
+
+  /* Status bar */
+  .win95-statusbar-section {
+    padding: 5px 8px;
+    font-size: 10px;
+    min-height: 32px;
+    display: flex;
+    align-items: center;
+  }
+
+  /* Folder stats hidden on small mobile */
+  .tree-stat {
+    display: none;
+  }
+  .tree-folder-name {
+    font-size: 11px;
+  }
+  .tree-task-count {
+    display: none;
+  }
+
+  /* Dashboard stats */
+  .dashboard-view {
+    padding: 6px 4px;
+  }
+  .dash-stat-card {
+    padding: 6px 2px;
+  }
+  .dash-stat-num {
+    font-size: 18px;
+  }
+  .dash-stat-label {
+    font-size: 8px;
+  }
+  .dash-project-pct {
+    font-size: 12px;
+  }
+
+  /* Dialog */
+  .win95-dialog {
+    max-width: 95vw;
+  }
+  .win95-dialog-body {
+    padding: 12px 10px;
+  }
+  .win95-dialog-footer {
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .win95-dialog-footer .win95-btn {
+    flex: 1;
+    min-width: 0;
+    text-align: center;
+  }
+}
+
+/* ===== Settings panel ===== */
+.win95-settings-panel {
+  position: fixed;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 100%;
+  max-width: 960px;
+  z-index: 150;
+  transition: transform 0.2s ease;
+}
+
+.win95-settings-panel.hidden {
+  transform: translateX(-50%) translateY(100%);
+}
+
+.win95-settings-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.1);
+  z-index: 140;
+}
+
+/* Context menu */
+.win95-context-menu {
+  position: fixed;
+  background: var(--win95-bg);
+  border: 2px solid;
+  border-color: var(--win95-white) var(--win95-darker) var(--win95-darker) var(--win95-white);
+  box-shadow: 2px 2px 0 0 rgba(0,0,0,0.3);
+  padding: 2px;
+  z-index: 300;
+  min-width: 160px;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.win95-context-item {
+  padding: 3px 20px 3px 8px;
+  cursor: pointer;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.win95-context-item:hover {
+  background: var(--win95-highlight);
+  color: var(--win95-highlight-text);
+}
+
+.win95-context-item.disabled {
+  color: var(--win95-dark);
+  text-shadow: 1px 1px 0 var(--win95-white);
+}
+
+.win95-context-sep {
+  height: 1px;
+  background: var(--win95-dark);
+  border-bottom: 1px solid var(--win95-white);
+  margin: 2px 0;
+}
+
+/* Confirm dialog */
+.win95-confirm-icon {
+  font-size: 28px;
+  margin-right: 8px;
+}
+
+.win95-confirm-text {
+  font-size: 11px;
+  line-height: 1.4;
+  flex: 1;
+}
+
+/* Schedule config area */
+.schedule-config-area {
+  background: var(--win95-bg);
+  border: 1px solid var(--win95-dark);
+  padding: 6px;
+  margin-top: 4px;
+}
+
+/* ===== Tree View (Folder > Tasks) ===== */
+.tree-folder {
+  border-bottom: 1px solid var(--win95-dark);
+}
+
+.tree-folder:last-child {
+  border-bottom: none;
+}
+
+/* Folder header row */
+.tree-folder-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  background: var(--win95-bg);
+  cursor: pointer;
+  user-select: none;
+  border-bottom: 1px solid transparent;
+  min-height: 28px;
+}
+
+.tree-folder-header:hover {
+  background: #d4d0c8;
+  border-bottom-color: var(--win95-dark);
+}
+
+.tree-toggle {
+  font-size: 14px;
+  line-height: 1;
+  flex-shrink: 0;
+  width: 18px;
+  text-align: center;
+}
+
+.tree-folder-color {
+  width: 12px;
+  height: 12px;
+  border: 1px solid rgba(0,0,0,0.3);
+  flex-shrink: 0;
+}
+
+.tree-folder-name {
+  font-size: 12px;
+  font-weight: bold;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tree-stat {
+  font-size: 10px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  font-weight: bold;
+}
+
+/* Add task button on folder */
+.tree-add-btn {
+  width: 18px;
+  height: 18px;
+  background: var(--win95-bg);
+  border: 1px solid;
+  border-color: var(--win95-white) var(--win95-darker) var(--win95-darker) var(--win95-white);
+  font-size: 12px;
+  font-weight: bold;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--win95-black);
+  padding: 0;
+  line-height: 1;
+}
+
+.tree-add-btn:hover {
+  background: #d4d0c8;
+}
+
+.tree-add-btn:active {
+  border-color: var(--win95-darker) var(--win95-white) var(--win95-white) var(--win95-darker);
+}
+
+/* Folder content (indented tasks area) */
+.tree-folder-content {
+  background: var(--win95-white);
+  border-left: 12px solid #d4d0c8;
+  margin-left: 8px;
+  border-right: 1px solid #e0e0e0;
+}
+
+/* Task rows inside tree */
+.tree-task-row {
+  display: flex;
+  align-items: center;
+  padding: 5px 8px 5px 20px;
+  border-bottom: 1px solid #e0e0e0;
+  cursor: pointer;
+  gap: 6px;
+  min-height: 30px;
+}
+
+.tree-task-row:last-child {
+  border-bottom: none;
+}
+
+.tree-task-row:hover {
+  background: #e8e8ff;
+}
+
+.tree-task-row.selected {
+  background: var(--win95-highlight);
+  color: var(--win95-highlight-text);
+}
+
+.tree-task-row.selected .task-schedule-info,
+.tree-task-row.selected .task-cd-timer {
+  color: #d0d0ff;
+}
+
+/* Status group headers inside folder */
+.tree-status-group {
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.tree-status-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  background: #f0f0f0;
+  cursor: pointer;
+  user-select: none;
+  font-size: 10px;
+}
+
+.tree-status-header:hover {
+  background: #e0e0e0;
+}
+
+.tree-status-content {
+  border-left: 2px solid #e0e0e0;
+  margin-left: 12px;
+}
+
+/* Count badge for tree status groups */
+.tree-status-header .count-badge {
+  font-weight: normal;
+  font-size: 9px;
+  background: var(--win95-white);
+  border: 1px solid var(--win95-dark);
+  padding: 0 3px;
+  min-width: 14px;
+  text-align: center;
+}
+
+/* ===== Responsive for tree view (mobile) — consolidated in main mobile block above ===== */
+
+/* ===== Fix #3: Loading screen animation ===== */
+.loading-screen {
+  padding: 40px 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+}
+
+.loading-icon {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.loading-bracket {
+  font-size: 18px;
+  font-weight: bold;
+  color: var(--win95-dark);
+  font-family: monospace;
+}
+
+.loading-bar-track {
+  width: 160px;
+  height: 16px;
+  background: var(--win95-white);
+  border: 2px solid;
+  border-color: var(--win95-dark) var(--win95-white) var(--win95-white) var(--win95-dark);
+  overflow: hidden;
+}
+
+.loading-bar-fill {
+  width: 30%;
+  height: 100%;
+  background: repeating-linear-gradient(
+    90deg,
+    var(--win95-highlight) 0px,
+    var(--win95-highlight) 10px,
+    var(--win95-title) 10px,
+    var(--win95-title) 20px
+  );
+  animation: loading-slide 1s linear infinite;
+}
+
+@keyframes loading-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}
+
+.loading-text {
+  font-size: 11px;
+  color: var(--win95-dark);
+  animation: loading-blink 1.2s step-end infinite;
+}
+
+@keyframes loading-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+/* ===== Fix #9: Move dialog ===== */
+.move-dialog {
+  max-width: 340px;
+}
+
+/* ===== Fix #7: Batch loading state ===== */
+.batch-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.batch-loading::after {
+  content: '';
+  width: 10px;
+  height: 10px;
+  border: 2px solid;
+  border-color: var(--win95-white) var(--win95-darker) var(--win95-darker) var(--win95-white);
+  animation: batch-spin 0.6s linear infinite;
+  display: inline-block;
+}
+
+@keyframes batch-spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* ===== Fix #11: Folder task count ===== */
+.tree-task-count {
+  font-size: 9px;
+  color: var(--win95-dark);
+  font-weight: normal;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ===== Fix #15: Filter tab count badge ===== */
+.filter-count {
+  font-size: 9px;
+  font-weight: normal;
+  color: var(--win95-dark);
+}
+
+/* ===== Dashboard View ===== */
+.dashboard-view {
+  padding: 6px 4px;
+}
+
+.dashboard-stats {
+  display: flex;
+  gap: 4px;
+  padding: 4px 0;
+}
+
+.dash-stat-card {
+  flex: 1;
+  text-align: center;
+  padding: 6px 2px;
+  background: var(--win95-white);
+  border: 1px solid;
+  border-color: var(--win95-dark) var(--win95-white) var(--win95-white) var(--win95-dark);
+}
+
+.dash-stat-num {
+  font-size: 20px;
+  font-weight: bold;
+  line-height: 1.2;
+}
+
+.dash-stat-label {
+  font-size: 9px;
+  color: var(--win95-dark);
+  margin-top: 2px;
+}
+
+/* Dashboard progress bar */
+.dash-progress-section {
+  padding: 6px 8px;
+}
+
+.dash-progress-bar-track {
+  height: 18px;
+  background: var(--win95-white);
+  border: 2px solid;
+  border-color: var(--win95-dark) var(--win95-white) var(--win95-white) var(--win95-dark);
+  position: relative;
+  overflow: hidden;
+}
+
+.dash-progress-fill-done {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  background: #a0a0a0;
+  min-width: 0;
+  transition: width 0.3s ease;
+}
+
+.dash-progress-fill-cd {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  background: #d4d060;
+  min-width: 0;
+  transition: width 0.3s ease, left 0.3s ease;
+}
+
+.dash-progress-fill-siap {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  background: #80d080;
+  min-width: 0;
+  transition: width 0.3s ease, left 0.3s ease;
+}
+
+.dash-progress-bar-track.dash-progress-mini {
+  height: 10px;
+  margin-top: 2px;
+  margin-bottom: 2px;
+}
+
+.dash-progress-legend {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px;
+  font-size: 10px;
+}
+
+/* Dashboard task list */
+.dash-task-list {
+  padding: 2px 0;
+}
+
+.dash-task-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-bottom: 1px solid #e0e0e0;
+  cursor: pointer;
+}
+
+.dash-task-item:last-child {
+  border-bottom: none;
+}
+
+.dash-task-item:hover {
+  background: #e8e8ff;
+}
+
+.dash-folder-dot {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  border: 1px solid rgba(0,0,0,0.3);
+}
+
+.dash-task-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.dash-task-name {
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dash-task-meta {
+  font-size: 9px;
+  color: var(--win95-dark);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dash-complete-btn {
+  width: 22px;
+  height: 18px;
+  background: var(--win95-bg);
+  border: 2px solid;
+  border-color: var(--win95-white) var(--win95-darker) var(--win95-darker) var(--win95-white);
+  font-size: 12px;
+  font-weight: bold;
+  color: var(--win95-siap);
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 0;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dash-complete-btn:hover {
+  background: #d4d0c8;
+}
+
+.dash-complete-btn:active {
+  border-color: var(--win95-darker) var(--win95-white) var(--win95-white) var(--win95-darker);
+}
+
+.dash-cd-badge {
+  font-size: 10px;
+  font-weight: bold;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* Dashboard project list */
+.dash-project-list {
+  padding: 2px 0;
+}
+
+.dash-project-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px;
+  border-bottom: 1px solid #e0e0e0;
+  cursor: pointer;
+}
+
+.dash-project-row:last-child {
+  border-bottom: none;
+}
+
+.dash-project-row:hover {
+  background: #e8e8ff;
+}
+
+.dash-project-name {
+  font-size: 11px;
+  font-weight: bold;
+}
+
+.dash-project-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.dash-project-pct {
+  font-size: 14px;
+  font-weight: bold;
+  flex-shrink: 0;
+  min-width: 36px;
+  text-align: right;
+}
+
+.dashboard-empty {
+  padding: 8px;
+  font-size: 11px;
+  color: var(--win95-dark);
+  text-align: center;
+}
+
+/* Dashboard responsive (mobile) — consolidated in main mobile block above */
+
+/* ===== Task Link Button ===== */
+.task-link-btn {
+  font-size: 10px;
+  cursor: pointer;
+  text-decoration: none;
+  flex-shrink: 0;
+  opacity: 0.7;
+  transition: opacity 0.15s;
+}
+
+.task-link-btn:hover {
+  opacity: 1;
+}
+
+.task-link-btn.auto-complete {
+  opacity: 1;
+  color: var(--win95-siap);
+  font-weight: bold;
+  text-shadow: 0 0 2px rgba(0, 128, 0, 0.3);
+}
+
+.task-link-btn.auto-complete:hover {
+  color: #006400;
+}
+
+/* ===== Kerjakan (Work on Task) Button ===== */
+.work-btn {
+  height: 20px;
+  background: var(--win95-bg);
+  border: 1px solid;
+  border-color: var(--win95-white) var(--win95-darker) var(--win95-darker) var(--win95-white);
+  font-size: 10px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: 0 6px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.work-btn:hover {
+  background: #d4d0c8;
+}
+
+.work-btn:active {
+  border-color: var(--win95-darker) var(--win95-white) var(--win95-white) var(--win95-darker);
+}
+
+/* Action buttons group for siap tasks */
+.task-action-btns {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+  margin-left: 6px;
+}
+
+/* ===== Working Panel ===== */
+.working-panel {
+  background: var(--win95-bg);
+  border: 2px solid;
+  border-color: var(--win95-darker) var(--win95-white) var(--win95-white) var(--win95-darker);
+  padding: 6px 8px;
+  margin: 0 8px 4px;
+}
+
+.working-header {
+  font-size: 11px;
+  font-weight: bold;
+  margin-bottom: 4px;
+}
+
+.working-link {
+  font-size: 10px;
+  color: #0000ff;
+  margin-bottom: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.working-progress {
+  margin-bottom: 4px;
+}
+
+.working-progress-bar {
+  height: 14px;
+  background: var(--win95-white);
+  border: 2px solid;
+  border-color: var(--win95-dark) var(--win95-white) var(--win95-white) var(--win95-dark);
+  overflow: hidden;
+}
+
+.working-progress-fill {
+  height: 100%;
+  background: var(--win95-highlight);
+  transition: width 1s linear;
+}
+
+.working-timer {
+  font-size: 10px;
+  color: var(--win95-dark);
+  margin-bottom: 6px;
+}
+
+.working-done-text {
+  font-size: 11px;
+  margin-bottom: 6px;
+  color: var(--win95-siap);
+}
+
+/* ===== Help Dialog ===== */
+.help-dialog {
+  max-width: 440px;
+}
+
+.help-body {
+  padding: 8px 12px;
+}
+
+.help-section {
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--win95-dark);
+  padding-bottom: 8px;
+}
+
+.help-section:last-child {
+  border-bottom: none;
+  margin-bottom: 0;
+  padding-bottom: 0;
+}
+
+.help-section-title {
+  font-size: 11px;
+  font-weight: bold;
+  color: var(--win95-title);
+  margin-bottom: 4px;
+  padding-bottom: 2px;
+}
+
+.help-item {
+  font-size: 10px;
+  line-height: 1.6;
+  padding: 1px 0;
+  color: var(--win95-black);
+}
+
+.help-key {
+  display: inline-block;
+  background: var(--win95-bg);
+  border: 1px solid;
+  border-color: var(--win95-dark) var(--win95-white) var(--win95-white) var(--win95-dark);
+  padding: 0 4px;
+  font-family: 'Tahoma', sans-serif;
+  font-size: 10px;
+  font-weight: bold;
+  margin-right: 4px;
+  white-space: nowrap;
+}
+
+/* ===== Feature 1: Priority Dot ===== */
+.priority-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  border: 1px solid rgba(0,0,0,0.3);
+  display: inline-block;
+}
+
+/* ===== Feature 4: Pomodoro Section ===== */
+.pomodoro-section {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0;
+  padding: 4px 6px;
+  background: var(--win95-white);
+  border: 1px solid var(--win95-dark);
+  border-color: var(--win95-dark) var(--win95-white) var(--win95-white) var(--win95-dark);
+  font-size: 11px;
+}
+
+.pomodoro-display {
+  font-family: 'Courier New', monospace;
+  font-size: 16px;
+  font-weight: bold;
+  color: var(--win95-title);
+  min-width: 70px;
+  text-align: center;
+}
+
+/* Responsive tweaks */
+@media (min-width: 769px) {
+  .priority-dot {
+    width: 10px;
+    height: 10px;
+  }
+  .pomodoro-display {
+    font-size: 20px;
+  }
+}
