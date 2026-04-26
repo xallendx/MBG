@@ -2149,6 +2149,7 @@ export default function MBGPage() {
           <button className="win95-toolbar-btn" onClick={() => fetchData(true)} title="Refresh (R)">🔄 <span>Refresh</span></button>
           <div className="win95-toolbar-sep" />
           <button className="win95-toolbar-btn" onClick={() => { setDialogType('templates'); fetchTemplates() }} title="Template Task">📋 <span>Template</span></button>
+          <button className="win95-toolbar-btn" onClick={() => setDialogType('telegram')} title="Telegram Notifikasi" style={telegramLinked ? { color: '#008000' } : { color: '#cc0000' }}>📱 <span>Telegram{telegramLinked ? '' : ''}</span></button>
         </div>
 
         {/* ===== MAIN CONTENT: Tree / Dashboard / Monitor ===== */}
