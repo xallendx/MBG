@@ -15,15 +15,18 @@ export async function POST(
     const task = await db.task.findFirst({ where: { id, userId } })
     if (!task) return NextResponse.json({ error: 'Task not found' }, { status: 404 })
 
-    // Use deleteMany with orderBy + take to atomically delete the latest log
-    // This avoids race conditions where two concurrent requests find the same log
-    const deleted = await db.taskLog.deleteMany({
-      where: { taskId: id },
-      orderBy: { completedAt: 'desc' },
-      take: 1
+    // Find latest log, then delete it (wrapped in transaction for atomicity)
+    const result = await db.$transaction(async (tx) => {
+      const latestLog = await tx.taskLog.findFirst({
+        where: { taskId: id },
+        orderBy: { completedAt: 'desc' },
+      })
+      if (!latestLog) return null
+      await tx.taskLog.delete({ where: { id: latestLog.id } })
+      return true
     })
 
-    if (deleted.count === 0) {
+    if (!result) {
       return NextResponse.json({ error: 'No completion to undo' }, { status: 400 })
     }
 
