@@ -52,11 +52,36 @@ const PROJECT_COLORS = ['#000080', '#008000', '#800000', '#808000', '#800080', '
 const PRIORITY_DOT: Record<string, string> = { high: '#CC0000', medium: '#DAA520', low: '#228B22' }
 const PRIORITY_LABEL: Record<string, string> = { high: '🔴 Tinggi', medium: '🟡 Sedang', low: '🟢 Rendah' }
 
-/* ===== Fix #1: Context menu viewport clamp helper ===== */
-const clampPos = (x: number, y: number, w = 160, h = 200) => {
+/* ===== Context menu viewport clamp — rough pre-position before render ===== */
+const clampPos = (x: number, y: number) => {
   if (typeof window === 'undefined') return { x, y }
-  const vw = window.innerWidth, vh = window.innerHeight
-  return { x: Math.min(x, vw - w - 8), y: Math.min(y, vh - h - 8) }
+  // Generous padding so menu doesn't flash off-screen before useEffect adjusts
+  const pad = 16
+  return { x: Math.min(Math.max(pad, x), window.innerWidth - pad), y: Math.min(Math.max(pad, y), window.innerHeight - pad) }
+}
+
+/* ===== Post-render viewport clamp utility — measures actual element ===== */
+const clampElementToViewport = (el: HTMLElement | null) => {
+  if (!el || typeof window === 'undefined') return
+  const rect = el.getBoundingClientRect()
+  const vw = window.innerWidth
+  const vh = window.innerHeight
+  const pad = 4
+  // Clamp right overflow
+  if (rect.right > vw - pad) {
+    el.style.left = Math.max(pad, vw - rect.width - pad) + 'px'
+  }
+  // Clamp bottom overflow — if too tall, anchor to bottom of viewport
+  if (rect.bottom > vh - pad) {
+    el.style.top = Math.max(pad, vh - rect.height - pad) + 'px'
+  }
+  // Clamp left/top (shouldn't happen but safety)
+  if (rect.left < pad) {
+    el.style.left = pad + 'px'
+  }
+  if (rect.top < pad) {
+    el.style.top = pad + 'px'
+  }
 }
 
 export default function MBGPage() {
@@ -370,6 +395,11 @@ export default function MBGPage() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const fileInputProjectImportRef = useRef<HTMLInputElement>(null)
   const projectImportTargetRef = useRef<string | null>(null)
+
+  // Refs for viewport clamping of floating menus
+  const taskCtxRef = useRef<HTMLDivElement>(null)
+  const projCtxRef = useRef<HTMLDivElement>(null)
+  const profileDropRef = useRef<HTMLDivElement>(null)
 
   // Long-press support for mobile context menu
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -1881,7 +1911,7 @@ export default function MBGPage() {
     ctxOpenTimeRef.current = Date.now()
     setSelectedTaskId(t.id)
     setProjectContextMenu(null) // Close project context menu if open
-    const pos = clampPos(e.clientX, e.clientY, 170, 250)
+    const pos = clampPos(e.clientX, e.clientY)
     setContextMenu({ x: pos.x, y: pos.y, task: t })
   }
   const handleProjCtx = (e: React.MouseEvent, p: Project) => {
@@ -1890,7 +1920,7 @@ export default function MBGPage() {
     ctxOpenTimeRef.current = Date.now()
     setSelectedTaskId(p.id)
     setContextMenu(null) // Close task context menu if open
-    const pos = clampPos(e.clientX, e.clientY, 180, 180)
+    const pos = clampPos(e.clientX, e.clientY)
     setProjectContextMenu({ x: pos.x, y: pos.y, project: p })
   }
 
@@ -1907,7 +1937,7 @@ export default function MBGPage() {
         const task = longPressTaskRef.current
         ctxOpenTimeRef.current = Date.now()
         setSelectedTaskId(task.id)
-        const pos = clampPos(longPressPosRef.current.x, longPressPosRef.current.y, 170, 250)
+        const pos = clampPos(longPressPosRef.current.x, longPressPosRef.current.y)
         setContextMenu({ x: pos.x, y: pos.y, task })
         if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(30)
       }
@@ -1925,7 +1955,7 @@ export default function MBGPage() {
       if (!longPressMovedRef.current && longPressProjectRef.current) {
         const proj = longPressProjectRef.current
         ctxOpenTimeRef.current = Date.now()
-        const pos = clampPos(longPressPosRef.current.x, longPressPosRef.current.y, 180, 180)
+        const pos = clampPos(longPressPosRef.current.x, longPressPosRef.current.y)
         setProjectContextMenu({ x: pos.x, y: pos.y, project: proj })
         if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(30)
       }
@@ -1951,6 +1981,17 @@ export default function MBGPage() {
     }
     document.addEventListener('click', c); return () => document.removeEventListener('click', c)
   }, [])
+
+  /* ===== Auto-clamp context menus & profile dropdown to viewport ===== */
+  useEffect(() => {
+    // Use rAF to ensure DOM has updated after React render
+    const raf = requestAnimationFrame(() => {
+      clampElementToViewport(taskCtxRef.current)
+      clampElementToViewport(projCtxRef.current)
+      clampElementToViewport(profileDropRef.current)
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [contextMenu, projectContextMenu, profileMenuOpen])
 
   /* ===== Template CRUD ===== */
   const saveTemplate = async () => {
@@ -2753,7 +2794,7 @@ export default function MBGPage() {
                 <>
                   {/* Invisible overlay: clicks here close the profile menu */}
                   <div style={{ position: 'fixed', inset: 0, zIndex: 9998 }} onClick={() => setProfileMenuOpen(false)} onPointerDown={e => e.stopPropagation()} />
-                  <div className="win95-dropdown" style={{ position: 'absolute', right: 0, top: '100%', zIndex: 9999, minWidth: 180 }} onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
+                  <div ref={profileDropRef} className="win95-dropdown" style={{ position: 'absolute', right: 0, top: '100%', zIndex: 9999, minWidth: 180 }} onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
                     <div className="win95-dropdown-item" style={{ cursor: 'default', opacity: 0.9, fontSize: 11, fontWeight: 'bold' }}>{authUser?.displayName || authUser?.username || 'User'}</div>
                     <div className="win95-dropdown-item" style={{ cursor: 'default', opacity: 0.5, fontSize: 10 }}>@{authUser?.username} | {projects.length} project, {activeTasks.length} aktif{totalArchived > 0 ? ` (+${totalArchived} arsip)` : ''}</div>
                     {isAdmin && <div className="win95-dropdown-item" style={{ cursor: 'default', opacity: 0.7, fontSize: 10 }}>👑 ADMIN</div>}
@@ -3272,7 +3313,7 @@ export default function MBGPage() {
 
       {/* ===== TASK CONTEXT MENU (Fix #1: clamped, Fix #8: duplicate, Fix #9: move) ===== */}
       {contextMenu && (
-        <div className="win95-context-menu" style={{ left: contextMenu.x, top: contextMenu.y, zIndex: 6000 }}>
+        <div ref={taskCtxRef} className="win95-context-menu" style={{ left: contextMenu.x, top: contextMenu.y, zIndex: 6000 }}>
           <div className="win95-context-item" onClick={() => { openDetail(contextMenu.task); setContextMenu(null) }}>📋 Detail</div>
           <div className="win95-context-item" onClick={() => { openEdit(contextMenu.task); setContextMenu(null) }}>✏️ Edit</div>
           {contextMenu.task.status === 'siap' && <div className="win95-context-item" onClick={() => { startWorking(contextMenu.task); setContextMenu(null) }}>🔨 Kerjakan</div>}
@@ -3476,7 +3517,7 @@ export default function MBGPage() {
 
       {/* ===== PROJECT CONTEXT MENU (Fix #1: clamped, Fix #7: batch complete, Fix #16: sort) ===== */}
       {projectContextMenu && (
-        <div className="win95-context-menu" style={{ left: projectContextMenu.x, top: projectContextMenu.y, zIndex: 6000 }}>
+        <div ref={projCtxRef} className="win95-context-menu" style={{ left: projectContextMenu.x, top: projectContextMenu.y, zIndex: 6000 }}>
           <div className="win95-context-item" onClick={() => { toggleFolder(projectContextMenu.project.id); setProjectContextMenu(null) }}>
             {expandedProjects.has(projectContextMenu.project.id) ? '📁 Collapse' : '📂 Expand'}
           </div>
