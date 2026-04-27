@@ -955,6 +955,10 @@ export default function MBGPage() {
     return projects
   }, [projects, projectSort])
 
+  /* ===== getActiveTasks: exclude archived sekali/tanggal_spesifik from active counts ===== */
+  // Must be defined BEFORE useMemo that references it (TDZ fix)
+  const getActiveTasks = (pt: Task[]) => pt.filter(t => !(t.status === 'selesai' && (t.scheduleType === 'sekali' || t.scheduleType === 'tanggal_spesifik')))
+
   /* ===== Memoized active task counts (performance — avoid re-computing on every render) ===== */
   const activeTasks = useMemo(() => getActiveTasks(tasks), [tasks])
   const totalSiap = useMemo(() => activeTasks.filter(t => t.status === 'siap').length, [activeTasks])
@@ -1769,7 +1773,7 @@ export default function MBGPage() {
   /* ===== Active tasks: hide completed 'sekali' from main view ===== */
   // In real life, a one-time task done is DONE - no reason to keep showing it.
   // It only appears in 'selesai' tab for reference.
-  const getActiveTasks = (pt: Task[]) => pt.filter(t => !(t.status === 'selesai' && (t.scheduleType === 'sekali' || t.scheduleType === 'tanggal_spesifik')))
+  // getActiveTasks is now defined earlier (before useMemo) to avoid TDZ error
 
   /* ===== Fix #4: Filtered tasks includes project name matching ===== */
   const filterTasks = (pt: Task[], projectName: string) => {
