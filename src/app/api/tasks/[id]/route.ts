@@ -84,12 +84,31 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
     if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     const { id } = await params
 
-    const existing = await db.task.findFirst({ where: { id, userId } })
-    if (!existing) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    // Use transaction: verify ownership, delete logs first, then task
+    // Belt-and-suspenders: even though DB has CASCADE, explicitly delete logs
+    // to avoid edge cases with pgbouncer transaction pooling
+    const result = await db.$transaction(async (tx) => {
+      const existing = await tx.task.findFirst({ where: { id, userId } })
+      if (!existing) return 'not_found'
 
-    await db.task.delete({ where: { id } })
+      // Explicitly delete logs first (redundant with CASCADE but more reliable with pgbouncer)
+      await tx.taskLog.deleteMany({ where: { taskId: id } })
+      // Clear notification timestamps
+      await tx.task.update({
+        where: { id },
+        data: { notifiedWarnAt: null, notifiedReadyAt: null }
+      })
+      // Delete the task
+      await tx.task.delete({ where: { id } })
+      return 'ok'
+    })
+
+    if (result === 'not_found') {
+      return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    }
     return NextResponse.json({ success: true })
-  } catch {
+  } catch (e) {
+    console.error('[DELETE /api/tasks/[id]]', e)
     return NextResponse.json({ error: 'Request failed' }, { status: 500 })
   }
 }

@@ -111,6 +111,7 @@ export default function MBGPage() {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const [dialogType, setDialogType] = useState<'add' | 'edit' | 'detail' | 'settings' | 'telegram' | 'edit-project' | 'add-project' | 'help' | 'share' | 'import-share' | 'notes' | 'admin' | 'templates' | null>(null)
   const [confirmData, setConfirmData] = useState<{ title: string; message: string; onConfirm: () => void } | null>(null)
+  const [confirmLoading, setConfirmLoading] = useState(false)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; task: Task } | null>(null)
   const [projectContextMenu, setProjectContextMenu] = useState<{ x: number; y: number; project: Project } | null>(null)
   const [toasts, setToasts] = useState<{ msg: string; type: 'success' | 'error' | 'info'; id: number }[]>([])
@@ -1063,17 +1064,38 @@ export default function MBGPage() {
     setConfirmData({
       title: 'Hapus Task', message: 'Yakin hapus task ini? Log juga ikut terhapus.',
       onConfirm: async () => {
-        // Close dialog FIRST — user can see the change immediately
-        setConfirmData(null)
+        setConfirmLoading(true)
         // Optimistic delete — prevent sync from re-adding it
         setTasks(prev => prev.filter(t => t.id !== id))
         lastWriteTime.current = Date.now()
+        let success = false
         try {
-          const res = await api(`/api/tasks/${id}`, { method: 'DELETE' })
-          if (!res.ok) { toast('Gagal menghapus task', 'error'); lastWriteTime.current = 0; delayedFetch(); return }
-          toast('Dihapus!', 'success')
-          delayedFetch()
-        } catch { toast('Gagal menghapus task', 'error'); lastWriteTime.current = 0; delayedFetch() }
+          // Try delete, with 1 retry on failure
+          for (let attempt = 0; attempt < 2; attempt++) {
+            try {
+              const res = await api(`/api/tasks/${id}`, { method: 'DELETE' })
+              if (res.ok) { success = true; break }
+              // 404 = already deleted (maybe from another tab), treat as success
+              if (res.status === 404) { success = true; break }
+              // 401 = auth expired, don't retry
+              if (res.status === 401) { toast('Sesi expired, silakan login ulang', 'error'); lastWriteTime.current = 0; delayedFetch(); break }
+              // Other error — retry once
+              if (attempt === 0) { await new Promise(r => setTimeout(r, 1500)); continue }
+              toast('Gagal menghapus task (server error)', 'error'); lastWriteTime.current = 0; delayedFetch()
+            } catch (networkErr) {
+              // Network error — retry once
+              if (attempt === 0) { await new Promise(r => setTimeout(r, 1500)); continue }
+              toast('Gagal menghapus task (jaringan)', 'error'); lastWriteTime.current = 0; delayedFetch()
+            }
+          }
+        } finally {
+          setConfirmLoading(false)
+          setConfirmData(null)
+          if (success) {
+            toast('Dihapus!', 'success')
+            delayedFetch()
+          }
+        }
       }
     })
   }
@@ -1404,6 +1426,7 @@ export default function MBGPage() {
     setConfirmData({
       title: 'Hapus Project', message: `Hapus project "${p.name}"? Semua task di dalamnya juga ikut terhapus.`,
       onConfirm: async () => {
+        setConfirmLoading(true)
         // Optimistic delete FIRST — prevent sync from re-adding it
         const deletedTaskIds = new Set(tasks.filter(t => t.project?.id === p.id).map(t => t.id))
         setProjects(prev => prev.filter(proj => proj.id !== p.id))
@@ -1420,14 +1443,17 @@ export default function MBGPage() {
           }
         }
         lastWriteTime.current = Date.now()
-        // Close dialog FIRST — user can see the change immediately
-        setConfirmData(null)
+        let success = false
         try {
           const res = await api(`/api/projects/${p.id}`, { method: 'DELETE' })
-          if (!res.ok) { toast('Gagal menghapus project', 'error'); lastWriteTime.current = 0; delayedFetch(); return }
-          toast('Project dihapus!', 'success')
-          delayedFetch()
-        } catch { toast('Gagal menghapus project', 'error'); lastWriteTime.current = 0; delayedFetch() }
+          if (res.ok || res.status === 404) { success = true }
+          else { toast('Gagal menghapus project', 'error'); lastWriteTime.current = 0; delayedFetch() }
+        } catch { toast('Gagal menghapus project (jaringan)', 'error'); lastWriteTime.current = 0; delayedFetch() }
+        finally {
+          setConfirmLoading(false)
+          setConfirmData(null)
+          if (success) { toast('Project dihapus!', 'success'); delayedFetch() }
+        }
       }
     })
   }
@@ -3260,11 +3286,16 @@ export default function MBGPage() {
 
       {/* ===== CONFIRM DIALOG ===== */}
       {confirmData && (
-        <div className="win95-dialog-overlay" role="presentation" onClick={() => setConfirmData(null)}>
+        <div className="win95-dialog-overlay" role="presentation" onClick={() => { if (!confirmLoading) setConfirmData(null) }}>
           <div className="win95-dialog" role="dialog" aria-modal="true" style={{ maxWidth: 350 }} onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
-            <div className="win95-titlebar"><span className="win95-titlebar-text">{confirmData.title}</span><button className="win95-titlebar-btn" onClick={() => setConfirmData(null)}>✕</button></div>
+            <div className="win95-titlebar"><span className="win95-titlebar-text">{confirmData.title}</span>{!confirmLoading && <button className="win95-titlebar-btn" onClick={() => setConfirmData(null)}>✕</button>}</div>
             <div className="win95-dialog-body" style={{ display: 'flex', alignItems: 'flex-start' }}><span className="win95-confirm-icon">⚠️</span><span className="win95-confirm-text">{confirmData.message}</span></div>
-            <div className="win95-dialog-footer"><button className="win95-btn primary" onClick={confirmData.onConfirm}>Ya</button><button className="win95-btn" onClick={() => setConfirmData(null)}>Tidak</button></div>
+            <div className="win95-dialog-footer">
+              <button className="win95-btn primary" disabled={confirmLoading} onClick={confirmData.onConfirm} style={confirmLoading ? { opacity: 0.6, cursor: 'wait' } : {}}>
+                {confirmLoading ? '⏳ Menghapus...' : 'Ya'}
+              </button>
+              <button className="win95-btn" disabled={confirmLoading} onClick={() => { if (!confirmLoading) setConfirmData(null) }}>Tidak</button>
+            </div>
           </div>
         </div>
       )}
