@@ -516,11 +516,15 @@ export default function MBGPage() {
     return () => clearInterval(iv)
   }, [authenticated])
 
-  // Audio alert utility (Feature 5)
+  // Audio alert utility (Feature 5) — reuse AudioContext to avoid browser instance limit
+  const audioCtxRef = useRef<AudioContext | null>(null)
   const playBeep = useCallback((frequency: number, duration: number, volume = 0.3) => {
     if (settings.audioAlertEnabled === false) return
     try {
-      const ctx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)()
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)()
+      }
+      const ctx = audioCtxRef.current
       const osc = ctx.createOscillator()
       const gain = ctx.createGain()
       osc.connect(gain)
@@ -1018,7 +1022,7 @@ export default function MBGPage() {
   const completeAndOpenLink = async (t: Task) => {
     // Open link FIRST while still in user click context (avoids popup blocker)
     if (t.link) {
-      window.open(t.link, '_blank')
+      window.open(t.link, '_blank', 'noopener,noreferrer')
     }
     if (t.status === 'siap') {
       await complete(t.id)
@@ -1034,7 +1038,7 @@ export default function MBGPage() {
     setWorkingCompleted(false)
     setUndoCountdown(0)
     if (t.project?.id) setExpandedProjects(prev => new Set(prev).add(t.project!.id))
-    if (t.link) window.open(t.link, '_blank')
+    if (t.link) window.open(t.link, '_blank', 'noopener,noreferrer')
     let count = 10
     workingTimerRef.current = setInterval(async () => {
       count--
@@ -1129,7 +1133,7 @@ export default function MBGPage() {
     setImportChecking(true)
     try {
       const res = await api(`/api/share/${code}`)
-      if (!res.ok) { const err = await res.json().catch(() => ({})); toast(err.error || 'Kode tidak valid'); setImportPreview(null); return }
+      if (!res.ok) { const err = await res.json().catch(() => ({})); toast(err.error || 'Kode tidak valid', 'error'); setImportPreview(null); return }
       const data = await res.json()
       setImportPreview({ project: data.project, taskCount: data.taskCount })
     } catch { toast('Gagal cek kode', 'error') }
@@ -1343,7 +1347,7 @@ export default function MBGPage() {
   const openDetail = (t: Task) => { if (Date.now() - ctxOpenTimeRef.current < 300) return; detailRef.current = t; setSelectedTaskId(t.id); setDialogType('detail') }
   const openEditProject = (p: Project) => { setFormProjectName(p.name); setFormProjectColor(p.color); setSelectedTaskId(p.id); setDialogType('edit-project') }
   const openAddProject = () => { setFormProjectName(''); setFormProjectColor('#000080'); setDialogType('add-project') }
-  const openSettings = () => { const s = settings as Record<string, unknown>; setFormTimezone((s.timezone as string) || 'WIB'); setFormTimeFormat(s.timeFormat === '12' ? '12' : '24'); setFormAutoExpandSiap(s.autoExpandSiap !== false); setFormAutoCompleteLink(s.autoCompleteLink === true); setFormPomodoroDuration((s.pomodoroDuration as number) || 25); setFormAudioAlertEnabled(s.audioAlertEnabled !== false); setDialogType('settings') }
+  const openSettings = () => { const s = settings as Record<string, unknown>; setFormTimezone((s.timezone as string) || 'WIB'); setFormTimeFormat(s.timeFormat === '12' ? '12' : '24'); setFormAutoExpandSiap(s.autoExpandSiap !== false); setFormAutoCompleteLink(s.autoCompleteLink === true); setFormTelegramNotif(s.telegramNotifEnabled !== false); setFormBrowserNotif(s.browserNotifEnabled !== false); setFormPomodoroDuration((s.pomodoroDuration as number) || 25); setFormAudioAlertEnabled(s.audioAlertEnabled !== false); setDialogType('settings') }
 
   /* ===== Folder toggle ===== */
   const toggleFolder = (projectId: string) => {
@@ -1497,6 +1501,15 @@ export default function MBGPage() {
     setPomodoroSeconds(pomodoroDuration)
   }, [pomodoroDuration])
 
+  // Handle pomodoro completion side effects via useEffect (not inside setState)
+  useEffect(() => {
+    if (pomodoroSeconds === 0 && pomodoroRunning) {
+      setPomodoroRunning(false)
+      playAlertPomodoro()
+      toast('🍅 Pomodoro selesai! Saatnya istirahat.', 'success')
+    }
+  }, [pomodoroSeconds, pomodoroRunning, playAlertPomodoro])
+
   const startPomodoro = (taskId: string) => {
     if (pomodoroTimerRef.current) clearInterval(pomodoroTimerRef.current)
     setPomodoroTaskId(taskId)
@@ -1506,9 +1519,6 @@ export default function MBGPage() {
       setPomodoroSeconds(prev => {
         if (prev <= 1) {
           if (pomodoroTimerRef.current) { clearInterval(pomodoroTimerRef.current); pomodoroTimerRef.current = null }
-          setPomodoroRunning(false)
-          playAlertPomodoro()
-          toast('🍅 Pomodoro selesai! Saatnya istirahat.', 'success')
           return 0
         }
         return prev - 1
@@ -1528,9 +1538,6 @@ export default function MBGPage() {
       setPomodoroSeconds(prev => {
         if (prev <= 1) {
           if (pomodoroTimerRef.current) { clearInterval(pomodoroTimerRef.current); pomodoroTimerRef.current = null }
-          setPomodoroRunning(false)
-          playAlertPomodoro()
-          toast('🍅 Pomodoro selesai! Saatnya istirahat.', 'success')
           return 0
         }
         return prev - 1
@@ -1669,7 +1676,7 @@ export default function MBGPage() {
               if (settings.autoCompleteLink && t.status === 'siap') {
                 completeAndOpenLink(t)
               } else {
-                window.open(t.link!, '_blank')
+                window.open(t.link!, '_blank', 'noopener,noreferrer')
               }
             }}
           >🔗</a>
@@ -2767,7 +2774,7 @@ export default function MBGPage() {
               if (settings.autoCompleteLink && t.status === 'siap') {
                 completeAndOpenLink(t)
               } else {
-                window.open(t.link!, '_blank')
+                window.open(t.link!, '_blank', 'noopener,noreferrer')
               }
               setContextMenu(null)
             }}>🔗 {settings.autoCompleteLink && contextMenu.task.status === 'siap' ? 'Buka + Selesaikan' : 'Buka Link'}</div>
@@ -3364,7 +3371,7 @@ function DetailDialog({ task, onClose, onEdit, onComplete, onReset, onDelete, on
             if (autoCompleteLink && task.status === 'siap') {
               onComplete()
             }
-            window.open(task.link!, '_blank')
+            window.open(task.link!, '_blank', 'noopener,noreferrer')
           }}>🔗 {autoCompleteLink && task.status === 'siap' ? 'Buka + Selesaikan' : 'Buka'}</button>}
           <button className="win95-btn" onClick={onEdit}>✏️ Edit</button>
           <button className="win95-btn" style={{ color: '#cc0000' }} onClick={onDelete}>🗑️ Hapus</button>

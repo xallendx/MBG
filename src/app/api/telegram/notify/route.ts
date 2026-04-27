@@ -31,9 +31,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Telegram belum dihubungkan. Buka Alat → Telegram untuk menghubungkan.' }, { status: 400 })
     }
 
-    // HTML-escape the message content before sending as HTML
-    const safeMessage = escHtml(typeof message === 'string' ? message : JSON.stringify(message))
-    await sendTelegramMessage(telegramChatId as string | number, safeMessage)
+    // Send the message as plain text (no HTML escaping needed)
+    await sendTelegramMessage(telegramChatId as string | number, typeof message === 'string' ? message : JSON.stringify(message))
 
     return NextResponse.json({ success: true, message: 'Notifikasi terkirim' })
   } catch {

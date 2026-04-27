@@ -9,25 +9,30 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
     if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     const { id } = await params
 
-    const task = await db.task.findFirst({ where: { id, userId } })
-    if (!task) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    // Use transaction to prevent race condition
+    const result = await db.$transaction(async (tx) => {
+      const task = await tx.task.findFirst({ where: { id, userId } })
+      if (!task) return { error: 'Not found', status: 404 as const }
 
-    // Block reset for sekali and tanggal_spesifik — these are final
-    if (!canReset(task.scheduleType)) {
-      return NextResponse.json({ error: `Task "${task.scheduleType === 'sekali' ? 'Sekali' : 'Tanggal Spesifik'}" tidak bisa di-reset` }, { status: 400 })
-    }
-
-    // Hapus semua log + reset notif tracking
-    await db.task.update({
-      where: { id },
-      data: {
-        notifiedWarnAt: null,
-        notifiedReadyAt: null,
+      if (!canReset(task.scheduleType)) {
+        return { error: `Task "${task.scheduleType === 'sekali' ? 'Sekali' : 'Tanggal Spesifik'}" tidak bisa di-reset`, status: 400 as const }
       }
+
+      // Delete logs + reset notification tracking atomically
+      await tx.task.update({
+        where: { id },
+        data: {
+          notifiedWarnAt: null,
+          notifiedReadyAt: null,
+        }
+      })
+
+      await tx.taskLog.deleteMany({ where: { taskId: id } })
+
+      return { success: true }
     })
 
-    await db.taskLog.deleteMany({ where: { taskId: id } })
-
+    if ('error' in result) return NextResponse.json({ error: result.error }, { status: result.status })
     return NextResponse.json({ success: true })
   } catch {
     return NextResponse.json({ error: 'Request failed' }, { status: 500 })

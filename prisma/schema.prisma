@@ -21,6 +21,7 @@ model User {
   tasks        Task[]
   notes        Note[]
   templates    TaskTemplate[]
+  pushSubscriptions PushSubscription[]
   createdAt    DateTime       @default(now())
   updatedAt    DateTime       @updatedAt
 }
@@ -115,4 +116,5 @@ model PushSubscription {
   endpoint  String   @unique
   keys      String   // JSON: { auth, p256dh }
   createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }

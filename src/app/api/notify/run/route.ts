@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { sendTelegramMessage } from '@/lib/telegram'
 import { getNextReadyAt } from '@/lib/schedule'
-import { getCurrentUser } from '@/lib/auth'
+import { requireCurrentUser } from '@/lib/auth'
 import webpush from 'web-push'
 
 // Configure VAPID
@@ -59,7 +59,7 @@ async function sendWebPush(userId: string, title: string, body: string, tag: str
 // Cek task user saat ini yang punya Telegram/Push, kirim notif jika perlu
 export async function POST() {
   try {
-    const currentUser = await getCurrentUser()
+    const currentUser = await requireCurrentUser()
     if (!currentUser) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
     const now = Date.now()

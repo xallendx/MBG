@@ -12,11 +12,13 @@ if (!COOKIE_SECRET) {
 const _SECRET = COOKIE_SECRET || ''
 
 function signCookie(userId: string): string {
+  if (!_SECRET) return '' // refuse to sign without secret
   const sig = crypto.createHmac('sha256', _SECRET).update(userId).digest('hex').slice(0, 32)
   return `${userId}.${sig}`
 }
 
 function verifyCookie(value: string): string | null {
+  if (!_SECRET) return null // refuse to verify without secret
   const dotIdx = value.lastIndexOf('.')
   if (dotIdx === -1) return null
   const userId = value.slice(0, dotIdx)
@@ -59,7 +61,7 @@ export function clearAuthCookie(res: NextResponse) {
   })
 }
 
-// Helper: get current user from cookie only
+// Helper: get current user from cookie only (does NOT check isBlocked — use requireUser for that)
 export async function getCurrentUser() {
   const userId = await getUserId()
   if (!userId) return null
@@ -68,6 +70,19 @@ export async function getCurrentUser() {
     where: { id: userId },
     select: { id: true, username: true, displayName: true, role: true, isBlocked: true }
   })
+  return user
+}
+
+// Helper: get current user and verify not blocked (for notify, push, etc.)
+export async function requireCurrentUser() {
+  const userId = await getUserId()
+  if (!userId) return null
+
+  const user = await db.user.findUnique({
+    where: { id: userId },
+    select: { id: true, username: true, displayName: true, role: true, isBlocked: true }
+  })
+  if (!user || user.isBlocked) return null
   return user
 }
 

@@ -36,6 +36,12 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
       return NextResponse.json({ error: 'Catatan maksimal 10000 karakter' }, { status: 400 })
     }
 
+    // Verify project ownership if projectId is being changed
+    if (projectId !== undefined && projectId) {
+      const project = await db.project.findFirst({ where: { id: projectId, userId } })
+      if (!project) return NextResponse.json({ error: 'Project tidak ditemukan' }, { status: 400 })
+    }
+
     // Normalize scheduleConfig: accept both object and string
     let normalizedConfig: unknown = undefined
     if (scheduleConfig !== undefined) {
@@ -46,6 +52,8 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
       }
     }
 
+    // Build update data — reset notification tracking if schedule changes
+    const scheduleChanged = scheduleType !== undefined || normalizedConfig !== undefined
     const task = await db.task.update({
       where: { id },
       data: {
@@ -58,6 +66,8 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
         ...(pinned !== undefined && { pinned }),
         ...(priority !== undefined && { priority }),
         ...(notes !== undefined && { notes: notes || null }),
+        // Reset notification tracking when schedule changes
+        ...(scheduleChanged && { notifiedWarnAt: null, notifiedReadyAt: null }),
       },
       include: { project: true }
     })

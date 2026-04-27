@@ -104,6 +104,12 @@ export async function POST(req: NextRequest) {
       select: { position: true }
     })
 
+    // Verify project ownership if projectId is provided
+    if (projectId) {
+      const project = await db.project.findFirst({ where: { id: projectId, userId } })
+      if (!project) return NextResponse.json({ error: 'Project tidak ditemukan' }, { status: 400 })
+    }
+
     // Normalize scheduleConfig: accept both object and string, always store as JSON string
     let config = scheduleConfig || {}
     if (typeof config === 'string') {

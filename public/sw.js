@@ -1,9 +1,9 @@
 // MBG Airdrop Task Manager — Service Worker
 // Handles push notifications even when the app is closed or in background
 
-const CACHE_NAME = 'mbg-v1'
+const CACHE_NAME = 'mbg-v2'
 
-// Install — cache essential assets
+// Install — cache essential static assets only (NO API routes)
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
@@ -70,15 +70,19 @@ self.addEventListener('notificationclick', (event) => {
   )
 })
 
-// Fetch — network first, fallback to cache
+// Fetch — network first, ONLY cache static assets (NOT /api/* routes)
 self.addEventListener('fetch', (event) => {
   // Only handle GET requests
   if (event.request.method !== 'GET') return
 
+  // NEVER cache API routes — always fetch fresh data
+  const url = new URL(event.request.url)
+  if (url.pathname.startsWith('/api/')) return
+
   event.respondWith(
     fetch(event.request)
       .then((response) => {
-        // Cache successful responses
+        // Cache successful responses for static assets only
         if (response.status === 200) {
           const clone = response.clone()
           caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone))

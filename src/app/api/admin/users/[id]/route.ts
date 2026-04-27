@@ -23,6 +23,14 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
       return NextResponse.json({ error: 'Tidak bisa memblokir diri sendiri' }, { status: 400 })
     }
 
+    // Cegah demote admin terakhir
+    if (role === 'USER' && target.role === 'ADMIN') {
+      const adminCount = await db.user.count({ where: { role: 'ADMIN', isBlocked: false } })
+      if (adminCount <= 1) {
+        return NextResponse.json({ error: 'Tidak bisa demote admin terakhir' }, { status: 400 })
+      }
+    }
+
     const updateData: Record<string, unknown> = {}
     if (typeof isBlocked === 'boolean') updateData.isBlocked = isBlocked
     if (role === 'USER' || role === 'ADMIN') updateData.role = role

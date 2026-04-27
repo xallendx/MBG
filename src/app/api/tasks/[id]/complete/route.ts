@@ -9,28 +9,33 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
     if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     const { id } = await params
 
-    const task = await db.task.findFirst({ where: { id, userId }, include: { logs: { orderBy: { completedAt: 'desc' } } } })
-    if (!task) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    // Use transaction to prevent double-completion race condition
+    const result = await db.$transaction(async (tx) => {
+      const task = await tx.task.findFirst({ where: { id, userId }, include: { logs: { orderBy: { completedAt: 'desc' } } } })
+      if (!task) return { error: 'Not found', status: 404 as const }
 
-    // BUG-FIX: hanya bisa complete jika status 'siap' — cegah double-completion
-    const status = computeStatus(task)
-    if (status !== 'siap') {
-      return NextResponse.json({ error: `Task tidak bisa diselesaikan — status saat ini: ${status}` }, { status: 400 })
-    }
-
-    // Buat log complete + reset notif tracking (karena mulai cooldown baru)
-    await db.task.update({
-      where: { id },
-      data: {
-        notifiedWarnAt: null,
-        notifiedReadyAt: null,
+      const status = computeStatus(task)
+      if (status !== 'siap') {
+        return { error: `Task tidak bisa diselesaikan — status saat ini: ${status}`, status: 400 as const }
       }
+
+      // Reset notification tracking + create log atomically
+      await tx.task.update({
+        where: { id },
+        data: {
+          notifiedWarnAt: null,
+          notifiedReadyAt: null,
+        }
+      })
+
+      await tx.taskLog.create({
+        data: { taskId: id }
+      })
+
+      return { success: true }
     })
 
-    await db.taskLog.create({
-      data: { taskId: id }
-    })
-
+    if ('error' in result) return NextResponse.json({ error: result.error }, { status: result.status })
     return NextResponse.json({ success: true })
   } catch {
     return NextResponse.json({ error: 'Request failed' }, { status: 500 })
