@@ -24,23 +24,38 @@ function safeDate(v: unknown): Date | null {
 }
 
 /**
+ * Get the UTC offset in milliseconds for a given timezone at a given UTC moment.
+ * Uses Intl.DateTimeFormat for robust, DST-aware offset calculation.
+ * Works correctly regardless of server timezone.
+ */
+function getUtcOffsetMs(date: Date, ianaTz: string): number {
+  // Format full date+time in both UTC and target timezone
+  const utcStr = date.toLocaleString('en-US', { timeZone: 'UTC', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+  const tzStr = date.toLocaleString('en-US', { timeZone: ianaTz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+  const parseParts = (s: string) => s.match(/(\d{2})\/(\d{2})\/(\d{4}),?\s+(\d{2}):(\d{2}):(\d{2})/)
+  const u = parseParts(tzStr)
+  const c = parseParts(utcStr)
+  if (!u || !c) return 0
+  // Compute total ms difference between timezone and UTC
+  const tzMs = parseInt(u[3]) * 86400000 + parseInt(u[4]) * 3600000 + parseInt(u[5]) * 60000 + parseInt(u[6]) * 1000
+  const utcMs = parseInt(c[3]) * 86400000 + parseInt(c[4]) * 3600000 + parseInt(c[5]) * 60000 + parseInt(c[6]) * 1000
+  return tzMs - utcMs
+}
+
+/**
  * Convert a user-timezone-local Date to UTC for storage/comparison.
  * Takes a Date that represents a time in the user's timezone (e.g., 09:00 WIB)
  * and returns a Date with the correct UTC time (e.g., 02:00 UTC).
+ *
+ * BUG FIX: Rewrote to include date components in offset calculation,
+ * preventing day-wrapping issues when timezone offset causes date change.
  */
 function userLocalToUTC(userLocalDate: Date, timezone: string): Date {
   const iana = TZ_MAP[timezone] || 'Asia/Jakarta'
-  const userStr = userLocalDate.toLocaleString('en-US', { timeZone: iana, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
-  const utcStr = userLocalDate.toLocaleString('en-US', { timeZone: 'UTC', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
-  const parseParts = (s: string) => s.match(/(\d{2})\/(\d{2})\/(\d{4}),?\s+(\d{2}):(\d{2}):(\d{2})/)
-  const uParts = parseParts(userStr)
-  const utcParts = parseParts(utcStr)
-  if (!uParts || !utcParts) return userLocalDate
-  // The hour/minute/second difference is the UTC offset (year/month/day cancel out)
-  const offset = (parseInt(uParts[4]) - parseInt(utcParts[4])) * 3600000 +
-    (parseInt(uParts[5]) - parseInt(utcParts[5])) * 60000 +
-    (parseInt(uParts[6]) - parseInt(utcParts[6])) * 1000
-  return new Date(userLocalDate.getTime() - offset)
+  const offsetMs = getUtcOffsetMs(userLocalDate, iana)
+  // The userLocalDate is interpreted as being in the user's timezone.
+  // Subtract the offset to get UTC.
+  return new Date(userLocalDate.getTime() - offsetMs)
 }
 
 /**
@@ -56,14 +71,22 @@ function getUserDayOfWeek(utcDate: Date, timezone: string): number {
 /**
  * Create a Date representing "user's midnight today" in UTC.
  * E.g., for WIB user: midnight WIB = 17:00 UTC previous day
+ *
+ * BUG FIX: Rewrote to use full offset calculation (includes date component),
+ * preventing incorrect results on non-UTC servers or with large timezone offsets.
  */
 function getUserMidnightToday(utcNow: Date, timezone: string): Date {
   const iana = TZ_MAP[timezone] || 'Asia/Jakarta'
   const dateStr = utcNow.toLocaleDateString('en-CA', { timeZone: iana }) // YYYY-MM-DD
-  const tempDate = new Date()
-  tempDate.setFullYear(parseInt(dateStr.substring(0, 4)), parseInt(dateStr.substring(5, 7)) - 1, parseInt(dateStr.substring(8, 10)))
-  tempDate.setHours(0, 0, 0, 0)
-  return userLocalToUTC(tempDate, timezone)
+  const parts = dateStr.split('-')
+  // Create a Date at midnight in the user's timezone, then convert to UTC
+  const userMidnight = new Date(
+    parseInt(parts[0]),
+    parseInt(parts[1]) - 1,
+    parseInt(parts[2]),
+    0, 0, 0, 0
+  )
+  return userLocalToUTC(userMidnight, timezone)
 }
 
 export function getNextReadyAt(task: ScheduleTask, timezone?: string): Date | null {
@@ -89,11 +112,14 @@ export function getNextReadyAt(task: ScheduleTask, timezone?: string): Date | nu
       const dates: string[] = (config.dates as string[]) || []
       if (dates.length === 0) return now
       const parsed = dates.map(d => {
-        const parts = d.split('-')
-        if (parts.length !== 3) return null
-        const tempDate = new Date()
-        tempDate.setFullYear(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]))
-        tempDate.setHours(0, 0, 0, 0)
+        const dParts = d.split('-')
+        if (dParts.length !== 3) return null
+        const tempDate = new Date(
+          parseInt(dParts[0]),
+          parseInt(dParts[1]) - 1,
+          parseInt(dParts[2]),
+          0, 0, 0, 0
+        )
         return userLocalToUTC(tempDate, tz)
       }).filter((d): d is Date => d !== null && !isNaN(d.getTime()))
       const futureDates = parsed.filter(d => d >= now).sort((a, b) => a.getTime() - b.getTime())

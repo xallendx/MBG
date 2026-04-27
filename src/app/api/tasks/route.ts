@@ -122,38 +122,41 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Priority tidak valid' }, { status: 400 })
     }
 
-    const maxPos = await db.task.findFirst({
-      where: { userId },
-      orderBy: { position: 'desc' },
-      select: { position: true }
-    })
-
-    // Verify project ownership if projectId is provided
-    if (projectId) {
-      const project = await db.project.findFirst({ where: { id: projectId, userId } })
-      if (!project) return NextResponse.json({ error: 'Project tidak ditemukan' }, { status: 400 })
-    }
-
     // Normalize scheduleConfig: accept both object and string, always store as JSON string
     let config = scheduleConfig || {}
     if (typeof config === 'string') {
       try { config = JSON.parse(config) } catch { config = {} }
     }
 
-    const task = await db.task.create({
-      data: {
-        userId,
-        name: name.trim(),
-        description: description?.trim() || null,
-        link: link?.trim() || null,
-        scheduleType: scheduleType || 'sekali',
-        scheduleConfig: JSON.stringify(config),
-        projectId: projectId || null,
-        pinned: pinned || false,
-        priority: priority || 'medium',
-        position: (maxPos?.position || 0) + 1
-      },
-      include: { project: true }
+    // BUG FIX: Wrap position lookup + create in transaction to prevent race condition
+    const task = await db.$transaction(async (tx) => {
+      const maxPos = await tx.task.findFirst({
+        where: { userId },
+        orderBy: { position: 'desc' },
+        select: { position: true }
+      })
+
+      // Verify project ownership if projectId is provided
+      if (projectId) {
+        const project = await tx.project.findFirst({ where: { id: projectId, userId } })
+        if (!project) throw new Error('Project tidak ditemukan')
+      }
+
+      return tx.task.create({
+        data: {
+          userId,
+          name: name.trim(),
+          description: description?.trim() || null,
+          link: link?.trim() || null,
+          scheduleType: scheduleType || 'sekali',
+          scheduleConfig: JSON.stringify(config),
+          projectId: projectId || null,
+          pinned: pinned || false,
+          priority: priority || 'medium',
+          position: (maxPos?.position || 0) + 1
+        },
+        include: { project: true }
+      })
     })
 
     return NextResponse.json(task, { status: 201 })

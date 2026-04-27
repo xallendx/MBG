@@ -948,12 +948,22 @@ export default function MBGPage() {
   const fmtFull = (d: Date) => d.toLocaleString('id-ID', { day: '2-digit', month: '2-digit', year: 'numeric', ...timeOpts, timeZone: userTzRef.current })
 
   /* ===== Clock: direct DOM — no React re-render every second ===== */
+  // BUG FIX: Read timezone & format from refs directly (not stale DOM attributes)
+  const clockFmtRef = useRef('24')
+  const clockTzRef = useRef('Asia/Jakarta')
+  useEffect(() => {
+    const tz = (settings as Record<string, unknown>).timezone as string || 'WIB'
+    const TZ_MAP: Record<string, string> = { WIB: 'Asia/Jakarta', WITA: 'Asia/Makassar', WIT: 'Asia/Jayapura' }
+    clockTzRef.current = TZ_MAP[tz] || 'Asia/Jakarta'
+    clockFmtRef.current = (settings as Record<string, unknown>).timeFormat === '12' ? '12' : '24'
+  }, [settings])
   useEffect(() => {
     const update = () => {
       const el = clockRef.current
       if (!el) return
-      const fmt = el.dataset.fmt || '24'
-      const tz = el.dataset.tz || 'Asia/Jakarta'
+      // Read directly from refs — always up-to-date, no stale DOM
+      const fmt = clockFmtRef.current
+      const tz = clockTzRef.current
       const opts: Intl.DateTimeFormatOptions = fmt === '12'
         ? { hour: '2-digit' as const, minute: '2-digit' as const, hour12: true as const, timeZone: tz }
         : { hour: '2-digit' as const, minute: '2-digit' as const, hour12: false as const, timeZone: tz }
@@ -1038,32 +1048,54 @@ export default function MBGPage() {
     if (completingIdsRef.current.has(id)) return
     completingIdsRef.current.add(id)
     setCompletingIds(p => new Set(p).add(id))
-    // No showGlobalLoading — optimistic update gives instant feedback
+    // BUG FIX: TRUE optimistic update — change status BEFORE API call for instant feedback
+    setTasks(prev => prev.map(t => t.id === id ? { ...t, status: 'selesai' as const, cooldownRemaining: '', cooldownMs: 0 } : t))
+    lastWriteTime.current = Date.now()
     try {
       const res = await api(`/api/tasks/${id}/complete`, { method: 'POST' })
-      if (!res.ok) { toast('Gagal menyelesaikan task', 'error'); return }
+      if (!res.ok) {
+        // Revert on failure
+        lastWriteTime.current = 0
+        toast('Gagal menyelesaikan task', 'error')
+        delayedFetch()
+        return
+      }
+      // BUG FIX: Use enriched task data from response to avoid status flicker (selesai→cooldown jump)
+      const data = await res.json().catch(() => ({}))
+      if (data.task) {
+        setTasks(prev => prev.map(t => t.id === id ? {
+          ...t,
+          status: data.task.status || 'cooldown',
+          nextReadyAt: data.task.nextReadyAt || null,
+          lastCompletedAt: data.task.lastCompletedAt || null,
+          cooldownRemaining: data.task.cooldownRemaining || '',
+          cooldownMs: data.task.cooldownMs || 0,
+          logCount: data.task.logCount ?? (t.logCount || 0) + 1,
+        } : t))
+      }
       toast('Task selesai!', 'success')
-      // Optimistic update: update task status locally
-      setTasks(prev => prev.map(t => t.id === id ? { ...t, status: 'selesai' as const, cooldownRemaining: '', cooldownMs: 0 } : t))
-      lastWriteTime.current = Date.now()
       delayedFetch()
     }
-    catch { toast('Gagal menyelesaikan task', 'error') }
+    catch { lastWriteTime.current = 0; toast('Gagal menyelesaikan task', 'error'); delayedFetch() }
     finally { completingIdsRef.current.delete(id); setCompletingIds(p => { const n = new Set(p); n.delete(id); return n }) }
   }
 
   const resetTask = async (id: string) => {
-    // No showGlobalLoading — optimistic update gives instant feedback
+    // BUG FIX: TRUE optimistic update — change status BEFORE API call for instant feedback
+    setTasks(prev => prev.map(t => t.id === id ? { ...t, status: 'siap' as const, nextReadyAt: null, cooldownRemaining: '', cooldownMs: 0 } : t))
+    lastWriteTime.current = Date.now()
     try {
       const res = await api(`/api/tasks/${id}/reset`, { method: 'POST' })
-      if (!res.ok) { toast('Gagal mereset task', 'error'); return }
+      if (!res.ok) {
+        lastWriteTime.current = 0
+        toast('Gagal mereset task', 'error')
+        delayedFetch()
+        return
+      }
       toast('Task di-reset!', 'success')
-      // Optimistic update: update task status locally
-      setTasks(prev => prev.map(t => t.id === id ? { ...t, status: 'siap' as const, nextReadyAt: null, cooldownRemaining: '', cooldownMs: 0 } : t))
-      lastWriteTime.current = Date.now()
       delayedFetch()
     }
-    catch { toast('Gagal mereset task', 'error') }
+    catch { lastWriteTime.current = 0; toast('Gagal mereset task', 'error'); delayedFetch() }
   }
 
   const reset = (id: string) => {
@@ -2087,15 +2119,23 @@ export default function MBGPage() {
   /* ===== Template CRUD ===== */
   const saveTemplate = async () => {
     if (!formTemplateName.trim()) { toast('Nama template wajib diisi!', 'error'); return }
+    // BUG FIX: Capture form values BEFORE resetting to avoid fragile closure behavior
+    const tplName = formTemplateName.trim()
+    const tplDesc = formTemplateDesc || null
+    const tplLink = formTemplateLink || null
+    const tplScheduleType = formTemplateScheduleType
+    const tplScheduleConfig = formTemplateScheduleConfig
+    const tplPriority = formTemplatePriority
+    const tplEditId = editingTemplate?.id
     // Optimistic: update template list locally immediately
     const newTemplate: TaskTemplate = {
-      id: editingTemplate?.id || 'temp-tpl-' + Date.now(),
-      name: formTemplateName, description: formTemplateDesc || null, link: formTemplateLink || null,
-      scheduleType: formTemplateScheduleType, scheduleConfig: JSON.stringify(formTemplateScheduleConfig), priority: formTemplatePriority,
+      id: tplEditId || 'temp-tpl-' + Date.now(),
+      name: tplName, description: tplDesc, link: tplLink,
+      scheduleType: tplScheduleType, scheduleConfig: JSON.stringify(tplScheduleConfig), priority: tplPriority,
       createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
     }
-    if (editingTemplate) {
-      setTemplates(prev => prev.map(t => t.id === editingTemplate.id ? newTemplate : t))
+    if (tplEditId) {
+      setTemplates(prev => prev.map(t => t.id === tplEditId ? newTemplate : t))
       toast('Template diperbarui!', 'success')
     } else {
       setTemplates(prev => [newTemplate, ...prev])
@@ -2106,16 +2146,16 @@ export default function MBGPage() {
     setEditingTemplate(null); setTemplateDialogOpen(false)
     try {
       let res: Response
-      if (editingTemplate) {
-        res = await api(`/api/templates/${editingTemplate.id}`, jsonOpts('PUT', {
-          name: formTemplateName, description: formTemplateDesc || null, link: formTemplateLink || null,
-          scheduleType: formTemplateScheduleType, scheduleConfig: formTemplateScheduleConfig, priority: formTemplatePriority
+      if (tplEditId) {
+        res = await api(`/api/templates/${tplEditId}`, jsonOpts('PUT', {
+          name: tplName, description: tplDesc, link: tplLink,
+          scheduleType: tplScheduleType, scheduleConfig: tplScheduleConfig, priority: tplPriority
         }))
         if (!res.ok) { toast('Gagal memperbarui template', 'error'); fetchTemplates(); return }
       } else {
         res = await api('/api/templates', jsonOpts('POST', {
-          name: formTemplateName, description: formTemplateDesc || null, link: formTemplateLink || null,
-          scheduleType: formTemplateScheduleType, scheduleConfig: formTemplateScheduleConfig, priority: formTemplatePriority
+          name: tplName, description: tplDesc, link: tplLink,
+          scheduleType: tplScheduleType, scheduleConfig: tplScheduleConfig, priority: tplPriority
         }))
         if (!res.ok) { toast('Gagal menambahkan template', 'error'); fetchTemplates(); return }
       }
@@ -2279,7 +2319,7 @@ export default function MBGPage() {
         {t.status === 'siap' && (
           <div className="task-action-btns">
             <button className="work-btn" onClick={e => { e.stopPropagation(); startWorking(t) }} title="Kerjakan (10d)" style={{ color: '#8B6914' }}>🔨 Kerjakan</button>
-            <button className="work-btn" onClick={e => { e.stopPropagation(); if (!loading) complete(t.id) }} title="Selesai" style={{ color: 'var(--win95-siap)' }}>✓ Selesai</button>
+            <button className="work-btn" onClick={e => { e.stopPropagation(); complete(t.id) }} title="Selesai" style={{ color: 'var(--win95-siap)', opacity: completingIds.has(t.id) ? 0.5 : 1 }} disabled={completingIds.has(t.id)}>{completingIds.has(t.id) ? '⏳' : '✓'} Selesai</button>
           </div>
         )}
       </div>
@@ -2642,7 +2682,7 @@ export default function MBGPage() {
                     <div className="dash-task-meta">{t.project?.name ? <>{t.project.name} &middot; </> : null}{SCHEDULE_LABELS[t.scheduleType]}</div>
                   </div>
                   <button className="dash-complete-btn" onClick={e => { e.stopPropagation(); startWorking(t) }} title="Kerjakan (10d)" style={{ color: '#DAA520' }}>🔨</button>
-                  <button className="dash-complete-btn" onClick={e => { e.stopPropagation(); complete(t.id) }} title="Selesai">✓</button>
+                  <button className="dash-complete-btn" onClick={e => { e.stopPropagation(); complete(t.id) }} title="Selesai" disabled={completingIds.has(t.id)} style={{ opacity: completingIds.has(t.id) ? 0.5 : 1 }}>{completingIds.has(t.id) ? '⏳' : '✓'}</button>
                 </div>
               ))}
             </div>
