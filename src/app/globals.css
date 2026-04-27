@@ -1217,6 +1217,7 @@ body {
   z-index: 10000;
   background: var(--win95-bg);
   overflow: hidden;
+  pointer-events: none; /* Don't block clicks underneath */
 }
 
 .global-loading-bar-fill {

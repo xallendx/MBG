@@ -1767,7 +1767,7 @@ export default function MBGPage() {
       // Don't close menu if clicking inside a menu bar item or dropdown
       const target = e.target as HTMLElement
       if (target.closest('.win95-menubar-item') || target.closest('.win95-dropdown')) return
-      setContextMenu(null); setProjectContextMenu(null); setOpenMenu(null)
+      setContextMenu(null); setProjectContextMenu(null); setOpenMenu(null); setProfileMenuOpen(false)
     }
     document.addEventListener('click', c); return () => document.removeEventListener('click', c)
   }, [])
