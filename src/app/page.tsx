@@ -431,45 +431,51 @@ export default function MBGPage() {
         if (!userId) return // Not logged in, will show login screen
       }
 
-      // STEP 2: Fetch data — JANGAN pernah logout otomatis di sini
-      const fetchSafe = async (url: string) => {
-        try {
-          return await fetch(url, fetchOpts(signal))
-        } catch { return null } // jaringan error, skip
-      }
-
-      const [tasksRes, projectsRes, settingsRes] = await Promise.all([
-        fetchSafe('/api/tasks'),
-        fetchSafe('/api/projects'),
-        fetchSafe('/api/settings')
-      ])
+      // STEP 2: Fetch all data in ONE request (avoids multiple Vercel cold starts)
+      const res = await fetch('/api/init', fetchOpts(signal)).catch(() => null)
       clearTimeout(timeout)
 
-      // Cek kalau semua gagal total (server mati?) — skip, jangan logout
-      if (!tasksRes && !projectsRes && !settingsRes) return
+      if (!res) return // Server unreachable
 
-      // Parse data — partial failure resilience: use successful responses only
-      let taskData: unknown = []
-      let projData: unknown = []
-      let settData: unknown = {}
+      // 401 = blocked/expired — handle auth rejection
+      if (res.status === 401) {
+        if (!skipAuthCheck) {
+          setAuthUser(null)
+          setAuthenticated(false)
+          persistAuth(null)
+        }
+        return
+      }
 
-      if (tasksRes && tasksRes.ok) taskData = await tasksRes.json().catch(() => [])
-      if (projectsRes && projectsRes.ok) projData = await projectsRes.json().catch(() => [])
-      if (settingsRes && settingsRes.ok) settData = await settingsRes.json().catch(() => ({}))
+      const data = await res.json().catch(() => null)
+      if (!data) return
+
+      // Process user identity from /api/init response
+      if (data.user && data.user.authenticated) {
+        const u = { id: data.user.userId, username: data.user.username, displayName: data.user.displayName, role: data.user.role }
+        setAuthUser(u)
+        setAuthenticated(true)
+        persistAuth(u)
+      }
 
       // Only update tasks/projects if enough time passed since last write (avoid overwriting optimistic state)
       const timeSinceWrite = Date.now() - lastWriteTime.current
       const shouldUpdateData = timeSinceWrite > SKIP_FETCH_AFTER_WRITE_MS || timeSinceWrite < 0
 
       if (shouldUpdateData) {
-        setTasks(Array.isArray(taskData) ? (taskData as Task[]).map((t: Task) => ({
+        setTasks(Array.isArray(data.tasks) ? (data.tasks as Task[]).map((t: Task) => ({
           ...t,
           cooldownMs: t.nextReadyAt ? Math.max(0, new Date(t.nextReadyAt).getTime() - Date.now()) : 0
         })) : [])
-        setProjects(Array.isArray(projData) ? projData as Project[] : [])
+        setProjects(Array.isArray(data.projects) ? data.projects as Project[] : [])
       }
-      const sd = settData as Record<string, unknown>
-      setSettings(typeof settData === 'object' && !Array.isArray(settData) ? settData as Settings : {})
+
+      // Always update notes and templates (no optimistic writes for these)
+      setNotes(Array.isArray(data.notes) ? data.notes : [])
+      setTemplates(Array.isArray(data.templates) ? data.templates : [])
+
+      const sd = (typeof data.settings === 'object' && !Array.isArray(data.settings)) ? data.settings as Record<string, unknown> : {}
+      setSettings(data.settings && typeof data.settings === 'object' ? data.settings as Settings : {})
       setFormTimezone(String(sd.timezone || 'WIB'))
       setFormTimeFormat(sd.timeFormat === '12' ? '12' : '24')
       setFormAutoExpandSiap(sd.autoExpandSiap !== false)
@@ -512,16 +518,12 @@ export default function MBGPage() {
   // Use refs for stable callbacks to prevent dependency thrashing
   const fetchDataRef = useRef(fetchData)
   fetchDataRef.current = fetchData
-  const fetchNotesRef = useRef(fetchNotes)
-  fetchNotesRef.current = fetchNotes
-  const fetchTemplatesRef = useRef(fetchTemplates)
-  fetchTemplatesRef.current = fetchTemplates
   const registerPushRef = useRef(registerPushSubscription)
   registerPushRef.current = registerPushSubscription
 
-  // Initial fetch — runs once on mount, uses refs for latest callbacks
+  // Initial fetch — single /api/init call replaces 6 separate API calls
   useEffect(() => {
-    fetchDataRef.current(); fetchNotesRef.current(); fetchTemplatesRef.current();
+    fetchDataRef.current();
     if (authUser?.id) registerPushRef.current(authUser.id)
   }, [authUser?.id])
 
