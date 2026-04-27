@@ -1218,11 +1218,13 @@ export default function MBGPage() {
   /* Fix B3: undoWorkingComplete deletes last log instead of full reset */
   const undoWorkingComplete = async () => {
     if (workingTaskId) {
+      showGlobalLoading()
       try {
         await api(`/api/tasks/${workingTaskId}/undo`, { method: 'POST' })
         toast('Task dibatalkan!', 'success')
         fetchData()
       } catch { toast('Gagal membatalkan task', 'error') }
+      finally { hideGlobalLoading() }
     }
     cancelWorking()
   }
@@ -1432,14 +1434,17 @@ export default function MBGPage() {
   }
 
   const toggleBlockUser = async (user: { id: string; username: string; isBlocked: boolean }) => {
+    showGlobalLoading()
     try {
       await api(`/api/admin/users/${user.id}`, jsonOpts('PUT', { isBlocked: !user.isBlocked }))
       toast(user.isBlocked ? `${user.username} di-unblock` : `${user.username} di-block`)
       fetchAdminData()
     } catch { toast('Gagal', 'error') }
+    finally { hideGlobalLoading() }
   }
 
   const createUserInviteCode = async (role: string) => {
+    showGlobalLoading()
     try {
       const res = await api('/api/admin/invite-codes', jsonOpts('POST', { role }))
       if (res.ok) {
@@ -1450,14 +1455,17 @@ export default function MBGPage() {
         toast('Gagal: ' + (err.error || ''))
       }
     } catch { toast('Gagal membuat kode', 'error') }
+    finally { hideGlobalLoading() }
   }
 
   const deleteInviteCode = async (code: { id: string; code: string }) => {
+    showGlobalLoading()
     try {
       const res = await api(`/api/admin/invite-codes/${code.id}`, { method: 'DELETE' })
       if (res.ok) { toast(`Kode ${code.code} dihapus`); fetchAdminData() }
       else toast('Gagal menghapus', 'error')
     } catch { toast('Gagal', 'error') }
+    finally { hideGlobalLoading() }
   }
 
   /* ===== Settings ===== */
