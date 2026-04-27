@@ -437,6 +437,21 @@ export default function MBGPage() {
     return `mbg_cache_${uid}`
   }, [authUser?.id])
 
+  /* ===== Settings: extract DRY settings→form sync helper (must be before loadFromCache) ===== */
+  const applySettingsToForm = useCallback((sd: Record<string, unknown>) => {
+    setFormTimezone(String(sd.timezone || 'WIB'))
+    setFormTimeFormat(sd.timeFormat === '12' ? '12' : '24')
+    setFormAutoExpandSiap(sd.autoExpandSiap !== false)
+    setFormAutoCompleteLink(sd.autoCompleteLink === true)
+    setFormTelegramNotif(sd.telegramNotifEnabled !== false)
+    setFormBrowserNotif(sd.browserNotifEnabled !== false)
+    setFormPomodoroDuration(Number(sd.pomodoroDuration) || 25)
+    setFormAudioAlertEnabled(sd.audioAlertEnabled !== false)
+    setTelegramLinked(!!sd.telegramChatId || !!sd.telegramId)
+    setTelegramName(String(sd.telegramName || ''))
+    setTelegramBotUsername(String(sd.telegramBotUsername || ''))
+  }, [])
+
   // Load data from localStorage cache (instant, 0ms)
   const loadFromCache = useCallback(() => {
     if (typeof window === 'undefined') return false
@@ -1840,21 +1855,6 @@ export default function MBGPage() {
     } catch { toast('Gagal', 'error') }
     finally { hideGlobalLoading() }
   }
-
-  /* ===== Settings: extract DRY settings→form sync helper ===== */
-  const applySettingsToForm = useCallback((sd: Record<string, unknown>) => {
-    setFormTimezone(String(sd.timezone || 'WIB'))
-    setFormTimeFormat(sd.timeFormat === '12' ? '12' : '24')
-    setFormAutoExpandSiap(sd.autoExpandSiap !== false)
-    setFormAutoCompleteLink(sd.autoCompleteLink === true)
-    setFormTelegramNotif(sd.telegramNotifEnabled !== false)
-    setFormBrowserNotif(sd.browserNotifEnabled !== false)
-    setFormPomodoroDuration(Number(sd.pomodoroDuration) || 25)
-    setFormAudioAlertEnabled(sd.audioAlertEnabled !== false)
-    setTelegramLinked(!!sd.telegramChatId || !!sd.telegramId)
-    setTelegramName(String(sd.telegramName || ''))
-    setTelegramBotUsername(String(sd.telegramBotUsername || ''))
-  }, [])
 
   /* ===== Settings ===== */
   const saveSettings = async () => {
