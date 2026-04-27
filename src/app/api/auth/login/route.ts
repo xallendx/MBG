@@ -4,6 +4,23 @@ import bcrypt from 'bcryptjs'
 import crypto from 'crypto'
 import { setAuthCookie } from '@/lib/auth'
 
+// In-memory rate limiter for login attempts
+const loginAttempts = new Map<string, { count: number; windowStart: number }>()
+const MAX_LOGIN_ATTEMPTS = 10
+const LOGIN_WINDOW_MS = 15 * 60 * 1000 // 15 minutes
+
+function isLoginRateLimited(key: string): boolean {
+  const now = Date.now()
+  const entry = loginAttempts.get(key)
+  if (!entry || now - entry.windowStart > LOGIN_WINDOW_MS) {
+    loginAttempts.set(key, { count: 1, windowStart: now })
+    return false
+  }
+  if (entry.count >= MAX_LOGIN_ATTEMPTS) return true
+  entry.count++
+  return false
+}
+
 async function verifyPassword(password: string, hash: string): Promise<{ match: boolean; newHash?: string }> {
   if (hash.startsWith('$2')) {
     const match = await bcrypt.compare(password, hash)
@@ -25,6 +42,11 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Username dan password wajib diisi' }, { status: 400 })
     }
 
+    // Rate limiting by username (prevent brute force)
+    if (isLoginRateLimited(username)) {
+      return NextResponse.json({ error: 'Terlalu banyak percobaan login. Coba lagi dalam 15 menit.' }, { status: 429 })
+    }
+
     const user = await db.user.findUnique({ where: { username } })
     if (!user || user.isBlocked) {
       return NextResponse.json({ error: 'Username atau password salah' }, { status: 401 })
@@ -43,6 +65,9 @@ export async function POST(req: Request) {
         data: { passwordHash: result.newHash }
       })
     }
+
+    // Clear rate limit on successful login
+    loginAttempts.delete(username)
 
     const res = NextResponse.json({ success: true, user: { id: user.id, username: user.username, displayName: user.displayName, role: user.role } })
     setAuthCookie(res, user.id)

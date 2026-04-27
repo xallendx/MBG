@@ -55,7 +55,8 @@ class ErrorBoundary extends React.Component<
                 padding: '6px 8px', background: '#fff', border: '1px inset',
                 textAlign: 'left', wordBreak: 'break-word', maxHeight: 100, overflow: 'auto'
               }}>
-                {this.state.error.message}
+                {/* Error details hidden in production to prevent info leakage */}
+                {process.env.NODE_ENV === 'development' ? this.state.error.message : 'Error ID: ' + Date.now()}
               </div>
             )}
             <button

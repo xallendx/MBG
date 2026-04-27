@@ -112,6 +112,7 @@ export async function POST(req: NextRequest) {
       taskCount,
     })
   } catch (e) {
-    return NextResponse.json({ error: 'Gagal import: ' + (e instanceof Error ? e.message : String(e)) }, { status: 500 })
+    console.error('Project import error:', e)
+    return NextResponse.json({ error: 'Gagal import' }, { status: 500 })
   }
 }

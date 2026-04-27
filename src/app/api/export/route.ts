@@ -23,20 +23,25 @@ export async function GET() {
     ])
 
     const user = await db.user.findUnique({ where: { id: userId } })
-    const settings = user?.settings ? JSON.parse(user.settings) : {}
+    let settings: Record<string, unknown> = {}
+    try { settings = user?.settings ? JSON.parse(user.settings) : {} } catch { settings = {} }
 
     const exportData = {
       version: 1,
       exportedAt: new Date().toISOString(),
       settings,
       projects: projects.map(p => ({ id: p.id, name: p.name, color: p.color, position: p.position })),
-      tasks: tasks.map(t => ({
-        id: t.id, name: t.name, description: t.description, link: t.link,
-        scheduleType: t.scheduleType, scheduleConfig: JSON.parse(t.scheduleConfig),
-        notes: t.notes, pinned: t.pinned, priority: t.priority, position: t.position,
-        project: t.project ? { name: t.project.name, color: t.project.color } : null,
-        logs: t.logs.map(l => ({ completedAt: l.completedAt.toISOString() }))
-      }))
+      tasks: tasks.map(t => {
+        let config: Record<string, unknown> = {}
+        try { config = JSON.parse(t.scheduleConfig) } catch { config = {} }
+        return {
+          id: t.id, name: t.name, description: t.description, link: t.link,
+          scheduleType: t.scheduleType, scheduleConfig: config,
+          notes: t.notes, pinned: t.pinned, priority: t.priority, position: t.position,
+          project: t.project ? { name: t.project.name, color: t.project.color } : null,
+          logs: t.logs.map(l => ({ completedAt: l.completedAt.toISOString() }))
+        }
+      })
     }
 
     return new Response(JSON.stringify(exportData, null, 2), {

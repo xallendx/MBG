@@ -3,6 +3,23 @@ import { db } from '@/lib/db'
 import bcrypt from 'bcryptjs'
 import { setAuthCookie } from '@/lib/auth'
 
+// In-memory rate limiter for registration attempts
+const registerAttempts = new Map<string, { count: number; windowStart: number }>()
+const MAX_REGISTER_ATTEMPTS = 5
+const REGISTER_WINDOW_MS = 15 * 60 * 1000 // 15 minutes
+
+function isRegisterRateLimited(key: string): boolean {
+  const now = Date.now()
+  const entry = registerAttempts.get(key)
+  if (!entry || now - entry.windowStart > REGISTER_WINDOW_MS) {
+    registerAttempts.set(key, { count: 1, windowStart: now })
+    return false
+  }
+  if (entry.count >= MAX_REGISTER_ATTEMPTS) return true
+  entry.count++
+  return false
+}
+
 export async function POST(req: Request) {
   try {
     const { username, password, displayName, inviteCode } = await req.json()
@@ -11,6 +28,12 @@ export async function POST(req: Request) {
     if (!inviteCode || typeof inviteCode !== 'string') {
       return NextResponse.json({ error: 'Kode undangan wajib diisi' }, { status: 400 })
     }
+
+    // Rate limit by invite code (prevent brute force on invite codes)
+    if (isRegisterRateLimited(inviteCode)) {
+      return NextResponse.json({ error: 'Terlalu banyak percobaan. Coba lagi dalam 15 menit.' }, { status: 429 })
+    }
+
     const code = inviteCode.trim().toUpperCase()
     if (code.length < 6) {
       return NextResponse.json({ error: 'Kode undangan tidak valid' }, { status: 400 })

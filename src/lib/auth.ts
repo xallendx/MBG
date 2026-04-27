@@ -6,10 +6,10 @@ import crypto from 'crypto'
 // HMAC cookie signing — prevents tampering with mbg_user_id cookie
 const COOKIE_SECRET = process.env.COOKIE_SECRET
 if (!COOKIE_SECRET) {
-  console.warn('[SECURITY] COOKIE_SECRET env var is not set. Using fallback for development only.')
+  console.error('[CRITICAL] COOKIE_SECRET env var is not set. Auth will not work. Set it in .env or environment.')
 }
 
-const _SECRET = COOKIE_SECRET || 'dev-only-fallback-do-not-use-in-production'
+const _SECRET = COOKIE_SECRET || ''
 
 function signCookie(userId: string): string {
   const sig = crypto.createHmac('sha256', _SECRET).update(userId).digest('hex').slice(0, 32)
