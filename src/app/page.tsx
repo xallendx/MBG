@@ -457,11 +457,17 @@ export default function MBGPage() {
       if (projectsRes && projectsRes.ok) projData = await projectsRes.json().catch(() => [])
       if (settingsRes && settingsRes.ok) settData = await settingsRes.json().catch(() => ({}))
 
-      setTasks(Array.isArray(taskData) ? (taskData as Task[]).map((t: Task) => ({
-        ...t,
-        cooldownMs: t.nextReadyAt ? Math.max(0, new Date(t.nextReadyAt).getTime() - Date.now()) : 0
-      })) : [])
-      setProjects(Array.isArray(projData) ? projData as Project[] : [])
+      // Only update tasks/projects if enough time passed since last write (avoid overwriting optimistic state)
+      const timeSinceWrite = Date.now() - lastWriteTime.current
+      const shouldUpdateData = timeSinceWrite > SKIP_FETCH_AFTER_WRITE_MS || timeSinceWrite < 0
+
+      if (shouldUpdateData) {
+        setTasks(Array.isArray(taskData) ? (taskData as Task[]).map((t: Task) => ({
+          ...t,
+          cooldownMs: t.nextReadyAt ? Math.max(0, new Date(t.nextReadyAt).getTime() - Date.now()) : 0
+        })) : [])
+        setProjects(Array.isArray(projData) ? projData as Project[] : [])
+      }
       const sd = settData as Record<string, unknown>
       setSettings(typeof settData === 'object' && !Array.isArray(settData) ? settData as Settings : {})
       setFormTimezone(String(sd.timezone || 'WIB'))
@@ -503,12 +509,27 @@ export default function MBGPage() {
     } catch { /* silent */ }
   }, [])
 
+  // Use refs for stable callbacks to prevent dependency thrashing
+  const fetchDataRef = useRef(fetchData)
+  fetchDataRef.current = fetchData
+  const fetchNotesRef = useRef(fetchNotes)
+  fetchNotesRef.current = fetchNotes
+  const fetchTemplatesRef = useRef(fetchTemplates)
+  fetchTemplatesRef.current = fetchTemplates
+  const registerPushRef = useRef(registerPushSubscription)
+  registerPushRef.current = registerPushSubscription
+
+  // Initial fetch — runs once on mount, uses refs for latest callbacks
   useEffect(() => {
-    fetchData(); fetchNotes(); fetchTemplates();
-    // Register push notifications on first load
-    if (authUser?.id) registerPushSubscription(authUser.id)
-    const i = setInterval(() => fetchData(false, true), 30000); return () => clearInterval(i)
-  }, [fetchData, fetchNotes, fetchTemplates, authUser?.id, registerPushSubscription])
+    fetchDataRef.current(); fetchNotesRef.current(); fetchTemplatesRef.current();
+    if (authUser?.id) registerPushRef.current(authUser.id)
+  }, [authUser?.id])
+
+  // Periodic sync — stable interval, always calls latest fetchData
+  useEffect(() => {
+    const i = setInterval(() => fetchDataRef.current(false, true), 30000)
+    return () => clearInterval(i)
+  }, [])
 
   // Scheduler: panggil /api/notify/run setiap 30 detik untuk Telegram notif
   useEffect(() => {
@@ -698,10 +719,13 @@ export default function MBGPage() {
 
   const toastTimersRef = useRef<ReturnType<typeof setTimeout>[]>([])
   const fetchTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([])
+  // Track last optimistic write time — prevent stale fetch from overwriting optimistic state
+  const lastWriteTime = useRef(0)
+  const SKIP_FETCH_AFTER_WRITE_MS = 4000 // Don't overwrite tasks/projects within 4s of a write
 
   // Helper: delayed fetch with cleanup tracking
   const delayedFetch = useCallback(() => {
-    const t = setTimeout(() => fetchData(false, true), 800)
+    const t = setTimeout(() => fetchData(false, true), 3000)
     fetchTimeoutsRef.current.push(t)
   }, [fetchData])
 
@@ -738,6 +762,7 @@ export default function MBGPage() {
       toast('Task selesai!', 'success')
       // Optimistic update: update task status locally
       setTasks(prev => prev.map(t => t.id === id ? { ...t, status: 'selesai' as const, cooldownRemaining: '', cooldownMs: 0 } : t))
+      lastWriteTime.current = Date.now()
       delayedFetch()
     }
     catch { toast('Gagal menyelesaikan task', 'error') }
@@ -751,6 +776,7 @@ export default function MBGPage() {
       toast('Task di-reset!', 'success')
       // Optimistic update: update task status locally
       setTasks(prev => prev.map(t => t.id === id ? { ...t, status: 'siap' as const, nextReadyAt: null, cooldownRemaining: '', cooldownMs: 0 } : t))
+      lastWriteTime.current = Date.now()
       delayedFetch()
     }
     catch { toast('Gagal mereset task', 'error') }
@@ -766,7 +792,7 @@ export default function MBGPage() {
   const delTask = (id: string) => {
     setConfirmData({
       title: 'Hapus Task', message: 'Yakin hapus task ini? Log juga ikut terhapus.',
-      onConfirm: async () => { try { await api(`/api/tasks/${id}`, { method: 'DELETE' }); toast('Dihapus!', 'success'); setTasks(prev => prev.filter(t => t.id !== id)); delayedFetch() } catch { toast('Gagal menghapus task', 'error') }; setConfirmData(null) }
+      onConfirm: async () => { try { await api(`/api/tasks/${id}`, { method: 'DELETE' }); toast('Dihapus!', 'success'); setTasks(prev => prev.filter(t => t.id !== id)); lastWriteTime.current = Date.now(); delayedFetch() } catch { toast('Gagal menghapus task', 'error') }; setConfirmData(null) }
     })
   }
 
@@ -797,6 +823,7 @@ export default function MBGPage() {
       } else return
       setDialogType(null); setSelectedTaskId(null)
       // Delayed fetch for server sync (handles Neon pgbouncer read-after-write latency)
+      lastWriteTime.current = Date.now()
       delayedFetch()
     } catch (e) { console.error(e); toast('Gagal menyimpan task', 'error') }
     finally { setSavingTask(false) }
@@ -811,6 +838,7 @@ export default function MBGPage() {
       const res = await api(`/api/tasks/${task.id}`, jsonOpts('PUT', { pinned: !task.pinned }))
       if (!res.ok) { toast('Gagal pin/unpin task', 'error'); return }
       setTasks(prev => prev.map(t => t.id === task.id ? { ...t, pinned: !task.pinned } : t))
+      lastWriteTime.current = Date.now()
       delayedFetch()
     } catch { toast('Gagal pin/unpin task', 'error') }
   }
@@ -827,6 +855,7 @@ export default function MBGPage() {
       }))
       if (!res.ok) { toast('Gagal menduplikat task', 'error'); return }
       toast('Task diduplikat!', 'success')
+      lastWriteTime.current = Date.now()
       delayedFetch()
     } catch { toast('Gagal menduplikat task', 'error') }
   }
@@ -842,6 +871,7 @@ export default function MBGPage() {
       const targetProj = projects.find(p => p.id === moveTargetProjectId)
       setTasks(prev => prev.map(t => t.id === moveDialogTask.id ? { ...t, project: targetProj ? { id: targetProj.id, name: targetProj.name, color: targetProj.color } : null } : t))
       setMoveDialogTask(null); setMoveTargetProjectId(null)
+      lastWriteTime.current = Date.now()
       delayedFetch()
     } catch { toast('Gagal memindahkan task', 'error') }
   }
@@ -873,6 +903,7 @@ export default function MBGPage() {
           setTasks(prev => prev.map(t => okIds.has(t.id) ? { ...t, status: 'selesai' as const, cooldownRemaining: '', cooldownMs: 0 } : t))
         } catch { toast('Gagal batch complete', 'error') }
         setBatchCompleting(null)
+        lastWriteTime.current = Date.now()
         delayedFetch()
         setConfirmData(null)
       }
@@ -911,6 +942,7 @@ export default function MBGPage() {
       setExpandedProjects(prev => new Set(prev).add(data.id))
       // Optimistic update: add new project to local state immediately
       setProjects(prev => [...prev, { id: data.id, name: data.name, color: data.color, _count: { tasks: 0 } }])
+      lastWriteTime.current = Date.now()
       // Delayed fetch to sync with server (handles Neon pgbouncer read-after-write latency)
       delayedFetch()
     } catch (e) { console.error(e); toast('Gagal membuat project', 'error') }
@@ -924,6 +956,7 @@ export default function MBGPage() {
       // Optimistic update: update project in local state immediately
       setProjects(prev => prev.map(p => p.id === id ? { ...p, name, color } : p))
       setDialogType(null)
+      lastWriteTime.current = Date.now()
       delayedFetch()
     } catch { toast('Gagal memperbarui project', 'error') }
   }
