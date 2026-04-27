@@ -1323,7 +1323,7 @@ export default function MBGPage() {
     // CRITICAL: Set write timestamp IMMEDIATELY to prevent periodic sync from overwriting optimistic state
     lastWriteTime.current = Date.now()
     setSavingProject(true)
-    showGlobalLoading()
+    // No global loading bar — optimistic update gives instant feedback
     try {
       const opts = { method: 'POST' as const, headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }, body: JSON.stringify({ name, color }), credentials: 'include' as RequestCredentials }
       const res = await fetch('/api/projects', opts)
@@ -1347,7 +1347,7 @@ export default function MBGPage() {
       setExpandedProjects(prev => { const n = new Set(prev); n.delete(tempId); return n })
       lastWriteTime.current = 0
       toast('Gagal membuat project', 'error')
-    } finally { setSavingProject(false); hideGlobalLoading() }
+    } finally { setSavingProject(false) }
   }
 
   const editProject = async (id: string, name: string, color: string) => {
@@ -1387,7 +1387,8 @@ export default function MBGPage() {
         lastWriteTime.current = Date.now()
         showGlobalLoading()
         try {
-          await api(`/api/projects/${p.id}`, { method: 'DELETE' })
+          const res = await api(`/api/projects/${p.id}`, { method: 'DELETE' })
+          if (!res.ok) { toast('Gagal menghapus project', 'error'); lastWriteTime.current = 0; delayedFetch(); return }
           toast('Project dihapus!', 'success')
           delayedFetch()
         } catch { toast('Gagal menghapus project', 'error'); lastWriteTime.current = 0; delayedFetch() }
@@ -1435,7 +1436,7 @@ export default function MBGPage() {
       const d = await r.json()
       const blob = new Blob([JSON.stringify(d, null, 2)], { type: 'application/json' })
       const u = URL.createObjectURL(blob); const a = document.createElement('a')
-      a.href = u; a.download = `mbg-project-${d.project?.name || 'export'}-${new Date().toISOString().slice(0, 10)}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(u), 1000)
+      a.href = u; a.download = `mbg-project-${(d.project?.name || 'export').replace(/[<>:"/\\|?*\x00]/g, '_')}-${new Date().toISOString().slice(0, 10)}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(u), 1000)
       toast('Project diunduh!', 'success')
     } catch { toast('Gagal export project', 'error') }
     finally { hideGlobalLoading() }
@@ -1482,7 +1483,8 @@ export default function MBGPage() {
   const saveTelegramBotUsername = async () => {
     showGlobalLoading()
     try {
-      await api('/api/settings', jsonOpts('PUT', { telegramBotUsername: telegramBotUsername.trim() }))
+      const res = await api('/api/settings', jsonOpts('PUT', { telegramBotUsername: telegramBotUsername.trim() }))
+      if (!res.ok) { toast('Gagal menyimpan', 'error'); return }
       toast('Bot username disimpan!', 'success')
     } catch { toast('Gagal menyimpan', 'error') }
     finally { hideGlobalLoading() }
@@ -1556,7 +1558,8 @@ export default function MBGPage() {
     if (workingTaskId) {
       showGlobalLoading()
       try {
-        await api(`/api/tasks/${workingTaskId}/undo`, { method: 'POST' })
+        const res = await api(`/api/tasks/${workingTaskId}/undo`, { method: 'POST' })
+        if (!res.ok) { toast('Gagal membatalkan task', 'error'); return }
         toast('Task dibatalkan!', 'success')
         fetchData()
       } catch { toast('Gagal membatalkan task', 'error') }
@@ -1635,13 +1638,14 @@ export default function MBGPage() {
     if (!noteFormContent.trim()) { toast('Isi catatan dulu!', 'error'); return }
     showGlobalLoading()
     try {
+      let res: Response
       if (editingNoteId) {
-        await api(`/api/notes/${editingNoteId}`, jsonOpts('PUT', { content: noteFormContent, color: noteFormColor }))
-        toast('Catatan diperbarui!', 'success')
+        res = await api(`/api/notes/${editingNoteId}`, jsonOpts('PUT', { content: noteFormContent, color: noteFormColor }))
       } else {
-        await api('/api/notes', jsonOpts('POST', { content: noteFormContent, color: noteFormColor }))
-        toast('Catatan ditambahkan!', 'success')
+        res = await api('/api/notes', jsonOpts('POST', { content: noteFormContent, color: noteFormColor }))
       }
+      if (!res.ok) { toast('Gagal simpan catatan', 'error'); return }
+      toast(editingNoteId ? 'Catatan diperbarui!' : 'Catatan ditambahkan!', 'success')
       setNoteFormContent(''); setNoteFormColor('#FFFFCC'); setEditingNoteId(null)
       fetchNotes()
     } catch { toast('Gagal simpan catatan', 'error') }
@@ -1651,13 +1655,13 @@ export default function MBGPage() {
   const deleteNote = (id: string) => {
     setConfirmData({
       title: 'Hapus Catatan', message: 'Yakin hapus catatan ini?',
-      onConfirm: async () => { showGlobalLoading(); try { await api(`/api/notes/${id}`, { method: 'DELETE' }); toast('Catatan dihapus!', 'success'); fetchNotes() } catch { toast('Gagal', 'error') } finally { hideGlobalLoading() }; setConfirmData(null) }
+      onConfirm: async () => { showGlobalLoading(); try { const res = await api(`/api/notes/${id}`, { method: 'DELETE' }); if (!res.ok) { toast('Gagal menghapus', 'error'); return } toast('Catatan dihapus!', 'success'); fetchNotes() } catch { toast('Gagal', 'error') } finally { hideGlobalLoading() }; setConfirmData(null) }
     })
   }
 
   const toggleNotePin = async (note: Note) => {
     showGlobalLoading()
-    try { await api(`/api/notes/${note.id}`, jsonOpts('PUT', { pinned: !note.pinned })); fetchNotes() } catch { toast('Gagal', 'error') }
+    try { const res = await api(`/api/notes/${note.id}`, jsonOpts('PUT', { pinned: !note.pinned })); if (!res.ok) { toast('Gagal', 'error'); return } fetchNotes() } catch { toast('Gagal', 'error') }
     finally { hideGlobalLoading() }
   }
 
@@ -1876,6 +1880,7 @@ export default function MBGPage() {
     e.stopPropagation()
     ctxOpenTimeRef.current = Date.now()
     setSelectedTaskId(t.id)
+    setProjectContextMenu(null) // Close project context menu if open
     const pos = clampPos(e.clientX, e.clientY, 170, 250)
     setContextMenu({ x: pos.x, y: pos.y, task: t })
   }
@@ -1884,6 +1889,7 @@ export default function MBGPage() {
     e.stopPropagation()
     ctxOpenTimeRef.current = Date.now()
     setSelectedTaskId(p.id)
+    setContextMenu(null) // Close task context menu if open
     const pos = clampPos(e.clientX, e.clientY, 180, 180)
     setProjectContextMenu({ x: pos.x, y: pos.y, project: p })
   }
@@ -1937,9 +1943,10 @@ export default function MBGPage() {
 
   useEffect(() => {
     const c = (e: MouseEvent) => {
-      // Don't close menu if clicking inside a menu bar item or dropdown
+      // Don't close menu if clicking inside a menu bar item, dropdown, or titlebar button
+      // React's e.stopPropagation() on synthetic events does NOT stop native document listeners
       const target = e.target as HTMLElement
-      if (target.closest('.win95-menubar-item') || target.closest('.win95-dropdown')) return
+      if (target.closest('.win95-menubar-item') || target.closest('.win95-dropdown') || target.closest('.win95-titlebar-btn') || target.closest('.win95-context-menu')) return
       setContextMenu(null); setProjectContextMenu(null); setOpenMenu(null); setProfileMenuOpen(false)
     }
     document.addEventListener('click', c); return () => document.removeEventListener('click', c)
@@ -1979,7 +1986,7 @@ export default function MBGPage() {
       title: 'Hapus Template', message: 'Yakin hapus template ini?',
       onConfirm: async () => {
         showGlobalLoading()
-        try { await api(`/api/templates/${id}`, { method: 'DELETE' }); toast('Template dihapus!', 'success'); fetchTemplates() }
+        try { const res = await api(`/api/templates/${id}`, { method: 'DELETE' }); if (!res.ok) { toast('Gagal menghapus', 'error'); return } toast('Template dihapus!', 'success'); fetchTemplates() }
         catch { toast('Gagal menghapus', 'error') }
         finally { hideGlobalLoading() }
         setConfirmData(null)
@@ -2743,23 +2750,27 @@ export default function MBGPage() {
             <div style={{ position: 'relative', marginLeft: 4 }}>
               <button className="win95-titlebar-btn" onClick={e => { e.stopPropagation(); setProfileMenuOpen(!profileMenuOpen) }} title="Profil Akun">👤</button>
               {profileMenuOpen && (
-                <div className="win95-dropdown" style={{ position: 'absolute', right: 0, top: '100%', zIndex: 9999, minWidth: 180 }} onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
-                  <div className="win95-dropdown-item" style={{ cursor: 'default', opacity: 0.9, fontSize: 11, fontWeight: 'bold' }}>{authUser?.displayName || authUser?.username || 'User'}</div>
-                  <div className="win95-dropdown-item" style={{ cursor: 'default', opacity: 0.5, fontSize: 10 }}>@{authUser?.username} | {projects.length} project, {activeTasks.length} aktif{totalArchived > 0 ? ` (+${totalArchived} arsip)` : ''}</div>
-                  {isAdmin && <div className="win95-dropdown-item" style={{ cursor: 'default', opacity: 0.7, fontSize: 10 }}>👑 ADMIN</div>}
-                  <div className="win95-dropdown-sep" />
-                  <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); setProfileMenuOpen(false); openSettings() }}>⚙️ Pengaturan</div>
-                  <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); setProfileMenuOpen(false); setDialogType('templates'); fetchTemplates() }}>📋 Template Task</div>
-                  <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); setProfileMenuOpen(false); setDialogType('help') }}>❓ Bantuan</div>
-                  {isAdmin && (
-                    <>
-                      <div className="win95-dropdown-sep" />
-                      <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); setProfileMenuOpen(false); openAdminPanel() }} style={{ color: '#006600', fontWeight: 'bold' }}>👑 Panel Admin</div>
-                    </>
-                  )}
-                  <div className="win95-dropdown-sep" />
-                  <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); handleLogout() }} style={{ color: '#cc0000' }}>🚪 Logout</div>
-                </div>
+                <>
+                  {/* Invisible overlay: clicks here close the profile menu */}
+                  <div style={{ position: 'fixed', inset: 0, zIndex: 9998 }} onClick={() => setProfileMenuOpen(false)} onPointerDown={e => e.stopPropagation()} />
+                  <div className="win95-dropdown" style={{ position: 'absolute', right: 0, top: '100%', zIndex: 9999, minWidth: 180 }} onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
+                    <div className="win95-dropdown-item" style={{ cursor: 'default', opacity: 0.9, fontSize: 11, fontWeight: 'bold' }}>{authUser?.displayName || authUser?.username || 'User'}</div>
+                    <div className="win95-dropdown-item" style={{ cursor: 'default', opacity: 0.5, fontSize: 10 }}>@{authUser?.username} | {projects.length} project, {activeTasks.length} aktif{totalArchived > 0 ? ` (+${totalArchived} arsip)` : ''}</div>
+                    {isAdmin && <div className="win95-dropdown-item" style={{ cursor: 'default', opacity: 0.7, fontSize: 10 }}>👑 ADMIN</div>}
+                    <div className="win95-dropdown-sep" />
+                    <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); setProfileMenuOpen(false); openSettings() }}>⚙️ Pengaturan</div>
+                    <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); setProfileMenuOpen(false); setDialogType('templates'); fetchTemplates() }}>📋 Template Task</div>
+                    <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); setProfileMenuOpen(false); setDialogType('help') }}>❓ Bantuan</div>
+                    {isAdmin && (
+                      <>
+                        <div className="win95-dropdown-sep" />
+                        <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); setProfileMenuOpen(false); openAdminPanel() }} style={{ color: '#006600', fontWeight: 'bold' }}>👑 Panel Admin</div>
+                      </>
+                    )}
+                    <div className="win95-dropdown-sep" />
+                    <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); handleLogout() }} style={{ color: '#cc0000' }}>🚪 Logout</div>
+                  </div>
+                </>
               )}
             </div>
           </div>
@@ -2919,8 +2930,8 @@ export default function MBGPage() {
 
       {/* ===== ADD PROJECT DIALOG ===== */}
       {dialogType === 'add-project' && (
-        <div className="win95-dialog-overlay" onClick={() => setDialogType(null)}>
-          <div className="win95-dialog" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
+        <div className="win95-dialog-overlay" role="presentation" onClick={() => setDialogType(null)}>
+          <div className="win95-dialog" role="dialog" aria-modal="true" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
             <div className="win95-titlebar"><span className="win95-titlebar-text">📁 Buat Project Baru</span><button className="win95-titlebar-btn" onClick={() => setDialogType(null)}>✕</button></div>
             <div className="win95-dialog-body">
               <div className="win95-field"><label>Nama Project *</label><input type="text" className="win95-input" value={formProjectName} onChange={e => setFormProjectName(e.target.value)} placeholder="Contoh: LayerZero" autoFocus onKeyDown={e => { if (e.key === 'Enter' && formProjectName.trim() && !savingProject) { const n = formProjectName.trim(), c = formProjectColor; setDialogType(null); addProject(n, c) } }} /></div>
@@ -2945,8 +2956,8 @@ export default function MBGPage() {
 
       {/* ===== ADD/EDIT TASK DIALOG ===== */}
       {(dialogType === 'add' || dialogType === 'edit') && (
-        <div className="win95-dialog-overlay" onClick={() => setDialogType(null)}>
-          <div className="win95-dialog" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
+        <div className="win95-dialog-overlay" role="presentation" onClick={() => setDialogType(null)}>
+          <div className="win95-dialog" role="dialog" aria-modal="true" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
             <div className="win95-titlebar">
               <span className="win95-titlebar-text">{dialogType === 'add' ? `Tambah Task` : 'Edit Task'}</span>
               <button className="win95-titlebar-btn" onClick={() => setDialogType(null)}>✕</button>
@@ -3023,8 +3034,8 @@ export default function MBGPage() {
 
       {/* ===== SETTINGS DIALOG ===== */}
       {dialogType === 'settings' && (
-        <div className="win95-dialog-overlay" onClick={() => setDialogType(null)}>
-          <div className="win95-dialog" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
+        <div className="win95-dialog-overlay" role="presentation" onClick={() => setDialogType(null)}>
+          <div className="win95-dialog" role="dialog" aria-modal="true" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
             <div className="win95-titlebar"><span className="win95-titlebar-text">Pengaturan</span><button className="win95-titlebar-btn" onClick={() => setDialogType(null)}>✕</button></div>
             <div className="win95-dialog-body">
               <div className="win95-field"><label>Timezone</label><select className="win95-select" value={formTimezone} onChange={e => setFormTimezone(e.target.value)}>{TZ_OPTIONS.map(tz => <option key={tz.value} value={tz.value}>{tz.label}</option>)}</select></div>
@@ -3102,8 +3113,8 @@ export default function MBGPage() {
 
       {/* ===== EDIT PROJECT DIALOG ===== */}
       {dialogType === 'edit-project' && (
-        <div className="win95-dialog-overlay" onClick={() => setDialogType(null)}>
-          <div className="win95-dialog" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
+        <div className="win95-dialog-overlay" role="presentation" onClick={() => setDialogType(null)}>
+          <div className="win95-dialog" role="dialog" aria-modal="true" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
             <div className="win95-titlebar"><span className="win95-titlebar-text">Edit Project</span><button className="win95-titlebar-btn" onClick={() => setDialogType(null)}>✕</button></div>
             <div className="win95-dialog-body">
               <div className="win95-field"><label>Nama Project</label><input type="text" className="win95-input" value={formProjectName} onChange={e => setFormProjectName(e.target.value)} /></div>
@@ -3126,8 +3137,8 @@ export default function MBGPage() {
 
       {/* ===== TELEGRAM DIALOG ===== */}
       {dialogType === 'telegram' && (
-        <div className="win95-dialog-overlay" onClick={() => setDialogType(null)}>
-          <div className="win95-dialog" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()} style={{ maxWidth: 420 }}>
+        <div className="win95-dialog-overlay" role="presentation" onClick={() => setDialogType(null)}>
+          <div className="win95-dialog" role="dialog" aria-modal="true" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()} style={{ maxWidth: 420 }}>
             <div className="win95-titlebar"><span className="win95-titlebar-text">📱 Telegram</span><button className="win95-titlebar-btn" onClick={() => setDialogType(null)}>✕</button></div>
             <div className="win95-dialog-body">
               {/* Connection Status */}
@@ -3223,7 +3234,7 @@ export default function MBGPage() {
 
       {/* ===== Fix #9: MOVE TASK DIALOG ===== */}
       {moveDialogTask && (
-        <div className="win95-dialog-overlay" onClick={() => setMoveDialogTask(null)}>
+        <div className="win95-dialog-overlay" role="presentation" onClick={() => setMoveDialogTask(null)}>
           <div className="win95-dialog move-dialog" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
             <div className="win95-titlebar"><span className="win95-titlebar-text">📦 Pindah Task</span><button className="win95-titlebar-btn" onClick={() => setMoveDialogTask(null)}>✕</button></div>
             <div className="win95-dialog-body">
@@ -3250,8 +3261,8 @@ export default function MBGPage() {
 
       {/* ===== CONFIRM DIALOG ===== */}
       {confirmData && (
-        <div className="win95-dialog-overlay" onClick={() => setConfirmData(null)}>
-          <div className="win95-dialog" style={{ maxWidth: 350 }} onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
+        <div className="win95-dialog-overlay" role="presentation" onClick={() => setConfirmData(null)}>
+          <div className="win95-dialog" role="dialog" aria-modal="true" style={{ maxWidth: 350 }} onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
             <div className="win95-titlebar"><span className="win95-titlebar-text">{confirmData.title}</span><button className="win95-titlebar-btn" onClick={() => setConfirmData(null)}>✕</button></div>
             <div className="win95-dialog-body" style={{ display: 'flex', alignItems: 'flex-start' }}><span className="win95-confirm-icon">⚠️</span><span className="win95-confirm-text">{confirmData.message}</span></div>
             <div className="win95-dialog-footer"><button className="win95-btn primary" onClick={confirmData.onConfirm}>Ya</button><button className="win95-btn" onClick={() => setConfirmData(null)}>Tidak</button></div>
@@ -3261,7 +3272,7 @@ export default function MBGPage() {
 
       {/* ===== TASK CONTEXT MENU (Fix #1: clamped, Fix #8: duplicate, Fix #9: move) ===== */}
       {contextMenu && (
-        <div className="win95-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }}>
+        <div className="win95-context-menu" style={{ left: contextMenu.x, top: contextMenu.y, zIndex: 6000 }}>
           <div className="win95-context-item" onClick={() => { openDetail(contextMenu.task); setContextMenu(null) }}>📋 Detail</div>
           <div className="win95-context-item" onClick={() => { openEdit(contextMenu.task); setContextMenu(null) }}>✏️ Edit</div>
           {contextMenu.task.status === 'siap' && <div className="win95-context-item" onClick={() => { startWorking(contextMenu.task); setContextMenu(null) }}>🔨 Kerjakan</div>}
@@ -3291,8 +3302,8 @@ export default function MBGPage() {
 
       {/* ===== SHARE PROJECT DIALOG ===== */}
       {dialogType === 'share' && (
-        <div className="win95-dialog-overlay" onClick={() => setDialogType(null)}>
-          <div className="win95-dialog" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
+        <div className="win95-dialog-overlay" role="presentation" onClick={() => setDialogType(null)}>
+          <div className="win95-dialog" role="dialog" aria-modal="true" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
             <div className="win95-titlebar"><span className="win95-titlebar-text">🔗 Share Project</span><button className="win95-titlebar-btn" onClick={() => setDialogType(null)}>✕</button></div>
             <div className="win95-dialog-body">
               {!shareCode ? (
@@ -3339,8 +3350,8 @@ export default function MBGPage() {
 
       {/* ===== IMPORT SHARE CODE DIALOG ===== */}
       {dialogType === 'import-share' && (
-        <div className="win95-dialog-overlay" onClick={() => setDialogType(null)}>
-          <div className="win95-dialog" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
+        <div className="win95-dialog-overlay" role="presentation" onClick={() => setDialogType(null)}>
+          <div className="win95-dialog" role="dialog" aria-modal="true" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
             <div className="win95-titlebar"><span className="win95-titlebar-text">📥 Import Share Code</span><button className="win95-titlebar-btn" onClick={() => setDialogType(null)}>✕</button></div>
             <div className="win95-dialog-body">
               <div className="win95-field">
@@ -3390,8 +3401,8 @@ export default function MBGPage() {
 
       {/* ===== TEMPLATE TASK DIALOG ===== */}
       {dialogType === 'templates' && (
-        <div className="win95-dialog-overlay" onClick={() => setDialogType(null)}>
-          <div className="win95-dialog" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()} style={{ maxWidth: 500, maxHeight: '85vh', overflowY: 'auto' }}>
+        <div className="win95-dialog-overlay" role="presentation" onClick={() => setDialogType(null)}>
+          <div className="win95-dialog" role="dialog" aria-modal="true" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()} style={{ maxWidth: 500, maxHeight: '85vh', overflowY: 'auto' }}>
             <div className="win95-titlebar"><span className="win95-titlebar-text">📋 Template Task</span><button className="win95-titlebar-btn" onClick={() => setDialogType(null)}>✕</button></div>
             <div className="win95-dialog-body">
               {templateDialogOpen ? (
@@ -3465,7 +3476,7 @@ export default function MBGPage() {
 
       {/* ===== PROJECT CONTEXT MENU (Fix #1: clamped, Fix #7: batch complete, Fix #16: sort) ===== */}
       {projectContextMenu && (
-        <div className="win95-context-menu" style={{ left: projectContextMenu.x, top: projectContextMenu.y }}>
+        <div className="win95-context-menu" style={{ left: projectContextMenu.x, top: projectContextMenu.y, zIndex: 6000 }}>
           <div className="win95-context-item" onClick={() => { toggleFolder(projectContextMenu.project.id); setProjectContextMenu(null) }}>
             {expandedProjects.has(projectContextMenu.project.id) ? '📁 Collapse' : '📂 Expand'}
           </div>
@@ -3499,7 +3510,7 @@ export default function MBGPage() {
 
       {/* ===== HELP DIALOG ===== */}
       {dialogType === 'help' && (
-        <div className="win95-dialog-overlay" onClick={() => setDialogType(null)}>
+        <div className="win95-dialog-overlay" role="presentation" onClick={() => setDialogType(null)}>
           <div className="win95-dialog help-dialog" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
             <div className="win95-titlebar"><span className="win95-titlebar-text">📖 Petunjuk Penggunaan</span><button className="win95-titlebar-btn" onClick={() => setDialogType(null)}>✕</button></div>
             <div className="win95-dialog-body help-body">
@@ -3611,8 +3622,8 @@ export default function MBGPage() {
 
       {/* ===== ADMIN PANEL DIALOG ===== */}
       {dialogType === 'admin' && isAdmin && (
-        <div className="win95-dialog-overlay" onClick={() => setDialogType(null)}>
-          <div className="win95-dialog" style={{ maxWidth: 700, width: '95vw', maxHeight: '85vh' }} onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
+        <div className="win95-dialog-overlay" role="presentation" onClick={() => setDialogType(null)}>
+          <div className="win95-dialog" role="dialog" aria-modal="true" style={{ maxWidth: 700, width: '95vw', maxHeight: '85vh' }} onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
             <div className="win95-titlebar">
               <span className="win95-titlebar-text">👑 Panel Admin</span>
               <button className="win95-titlebar-btn" onClick={() => setDialogType(null)}>✕</button>
@@ -3806,7 +3817,7 @@ export default function MBGPage() {
       )}
 
       {/* ===== TOAST ===== */}
-      <div className="toast-container">{toasts.map((t) => {
+      <div className="toast-container" role="status" aria-live="polite">{toasts.map((t) => {
         const icon = t.type === 'success' ? '✅' : t.type === 'error' ? '❌' : '💡'
         const cls = t.type === 'success' ? 'win95-toast-success' : t.type === 'error' ? 'win95-toast-error' : 'win95-toast-info'
         return <div key={t.id} className={`win95-toast ${cls}`}>{icon} {t.msg}</div>
@@ -3838,8 +3849,8 @@ function DetailDialog({ task, onClose, onEdit, onComplete, onReset, onDelete, on
   const sl = task.status === 'siap' ? '✅ Siap Sekarang' : task.status === 'cooldown' ? '⏳ Cooldown' : '✔️ Selesai'
 
   return (
-    <div className="win95-dialog-overlay" onClick={onClose}>
-      <div className="win95-dialog" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()} style={{ maxWidth: 420 }}>
+    <div className="win95-dialog-overlay" role="presentation" onClick={onClose}>
+      <div className="win95-dialog" role="dialog" aria-modal="true" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()} style={{ maxWidth: 420 }}>
         <div className="win95-titlebar"><span className="win95-titlebar-text">📋 {task.name}</span><button className="win95-titlebar-btn" onClick={onClose}>✕</button></div>
         <div className="win95-dialog-body">
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
