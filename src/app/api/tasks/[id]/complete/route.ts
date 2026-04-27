@@ -9,12 +9,17 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
     if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     const { id } = await params
 
+    // Fetch user settings for timezone
+    const user = await db.user.findUnique({ where: { id: userId }, select: { settings: true } }).catch(() => null)
+    let userTz = 'WIB'
+    try { userTz = user?.settings ? (JSON.parse(user.settings).timezone as string) || 'WIB' : 'WIB' } catch { /* use default */ }
+
     // Use transaction to prevent double-completion race condition
     const result = await db.$transaction(async (tx) => {
       const task = await tx.task.findFirst({ where: { id, userId }, include: { logs: { orderBy: { completedAt: 'desc' } } } })
       if (!task) return { error: 'Not found', status: 404 as const }
 
-      const status = computeStatus(task)
+      const status = computeStatus(task, userTz)
       if (status !== 'siap') {
         return { error: `Task tidak bisa diselesaikan — status saat ini: ${status}`, status: 400 as const }
       }

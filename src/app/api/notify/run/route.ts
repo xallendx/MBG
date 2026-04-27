@@ -97,7 +97,7 @@ export async function POST() {
     })
 
     for (const task of tasks) {
-      const nextReady = getNextReadyAt(task)
+      const nextReady = getNextReadyAt(task, (settings.timezone as string) || 'WIB')
       if (!nextReady) continue
 
       const msUntilReady = nextReady.getTime() - now
@@ -105,8 +105,11 @@ export async function POST() {
       const taskLabel = `${projName}${escHtml(task.name)}`
       const displayName = escHtml(user.displayName || user.username)
 
-      // ---- Notif 2 menit sebelum siap ----
-      if (msUntilReady > 0 && msUntilReady <= 120000 && !task.notifiedWarnAt) {
+      // Use user's notifyBeforeCooldownMin setting (default 5 minutes)
+      const notifyBeforeMs = ((settings.notifyBeforeCooldownMin as number) || 5) * 60 * 1000
+
+      // ---- Notif X menit sebelum siap (based on user setting) ----
+      if (msUntilReady > 0 && msUntilReady <= notifyBeforeMs && !task.notifiedWarnAt) {
         const minutesLeft = Math.ceil(msUntilReady / 60000)
         const secondsLeft = Math.ceil(msUntilReady / 1000)
         let timeText = ''

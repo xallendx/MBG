@@ -133,6 +133,10 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true })
       }
 
+      // Get user timezone for schedule calculations
+      let userTz = 'WIB'
+      try { userTz = (JSON.parse(matchedUser.settings).timezone as string) || 'WIB' } catch { /* default */ }
+
       const tasks = await db.task.findMany({
         where: { userId: matchedUser.id },
         include: {
@@ -141,9 +145,9 @@ export async function POST(req: NextRequest) {
         }
       })
 
-      const siapTasks = tasks.filter(t => computeStatus(t) === 'siap')
-      const cdTasks = tasks.filter(t => computeStatus(t) === 'cooldown')
-      const doneTasks = tasks.filter(t => computeStatus(t) === 'selesai')
+      const siapTasks = tasks.filter(t => computeStatus(t, userTz) === 'siap')
+      const cdTasks = tasks.filter(t => computeStatus(t, userTz) === 'cooldown')
+      const doneTasks = tasks.filter(t => computeStatus(t, userTz) === 'selesai')
 
       const lines = [
         '📊 <b>Ringkasan Task MBG</b>',

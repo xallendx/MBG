@@ -13,37 +13,33 @@ export async function GET() {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    // ── Fetch all data sections in parallel ──
-    const [
-      userResult,
-      tasksResult,
-      projectsResult,
-      settingsResult,
-      notesResult,
-      templatesResult,
-    ] = await Promise.all([
-      // ── User identity ──
-      db.user
-        .findUnique({
-          where: { id: userId },
-          select: { id: true, username: true, displayName: true, role: true },
-        })
-        .then((user) => {
-          if (!user) return null
-          return {
-            userId: user.id,
-            username: user.username,
-            displayName: user.displayName,
-            role: user.role,
-            authenticated: true,
-          }
-        })
-        .catch((e) => {
-          console.error('[GET /api/init] user fetch failed', e)
-          return null
-        }),
+    // ── Fetch settings + user first (needed for timezone in task enrichment) ──
+    const [userResult, settingsResult] = await Promise.all([
+      db.user.findUnique({
+        where: { id: userId },
+        select: { id: true, username: true, displayName: true, role: true, settings: true },
+      }).then((user) => {
+        if (!user) return null
+        let settings: Record<string, unknown> = {}
+        try { settings = user.settings ? JSON.parse(user.settings) : {} } catch { /* use empty */ }
+        return {
+          userId: user.id, username: user.username, displayName: user.displayName, role: user.role, authenticated: true,
+          timezone: (settings.timezone as string) || 'WIB',
+        }
+      }).catch((e) => {
+        console.error('[GET /api/init] user fetch failed', e)
+        return null
+      }),
+      // Settings will be extracted from userResult above; this placeholder keeps Promise.all happy
+      Promise.resolve(null),
+    ])
 
-      // ── Tasks — select ONLY needed fields (no userId, no createdAt, no updatedAt) ──
+    // Extract timezone from user result
+    const userTz = (userResult as Record<string, unknown> | null)?.timezone as string || 'WIB'
+
+    // ── Fetch remaining data in parallel (tasks need timezone from above) ──
+    const [tasksResult, projectsResult, settingsOnlyResult, notesResult, templatesResult] = await Promise.all([
+      // ── Tasks — select ONLY needed fields ──
       db.task
         .findMany({
           where: { userId },
@@ -61,8 +57,8 @@ export async function GET() {
           const now = Date.now()
           const enriched = tasks.map((t) => {
             try {
-              const status = computeStatus(t)
-              const nextReady = getNextReadyAt(t)
+              const status = computeStatus(t, userTz)
+              const nextReady = getNextReadyAt(t, userTz)
               const rawLastCompleted = t.logs.length > 0 ? t.logs[0].completedAt : null
               const lastCompleted = rawLastCompleted instanceof Date && !isNaN(rawLastCompleted.getTime()) ? rawLastCompleted : null
 
@@ -81,24 +77,13 @@ export async function GET() {
                 }
               }
 
-              // Build minimal task object — no logs array, no internal fields
               return {
-                id: t.id,
-                name: t.name,
-                description: t.description,
-                link: t.link,
-                scheduleType: t.scheduleType,
-                scheduleConfig: t.scheduleConfig,
-                notes: t.notes,
-                pinned: t.pinned,
-                priority: t.priority,
-                status,
-                nextReadyAt: nextReady instanceof Date && !isNaN(nextReady.getTime()) ? nextReady.toISOString() : null,
+                id: t.id, name: t.name, description: t.description, link: t.link,
+                scheduleType: t.scheduleType, scheduleConfig: t.scheduleConfig, notes: t.notes,
+                pinned: t.pinned, priority: t.priority,
+                status, nextReadyAt: nextReady instanceof Date && !isNaN(nextReady.getTime()) ? nextReady.toISOString() : null,
                 lastCompletedAt: lastCompleted?.toISOString() || null,
-                cooldownRemaining,
-                cooldownMs,
-                logCount: t._count.logs,
-                project: t.project || null,
+                cooldownRemaining, cooldownMs, logCount: t._count.logs, project: t.project || null,
               }
             } catch (e) {
               console.error('[GET /api/init] task enrichment error for', t.id, e)
@@ -107,13 +92,11 @@ export async function GET() {
                 scheduleType: t.scheduleType, scheduleConfig: t.scheduleConfig, notes: t.notes,
                 pinned: t.pinned, priority: t.priority,
                 status: 'siap' as const, nextReadyAt: null, lastCompletedAt: null,
-                cooldownRemaining: '', cooldownMs: 0, logCount: t._count.logs,
-                project: t.project || null,
+                cooldownRemaining: '', cooldownMs: 0, logCount: t._count.logs, project: t.project || null,
               }
             }
           })
 
-          // Sort: siap → cooldown → selesai, then by nextReadyAt, pinned, priority, position
           return enriched.sort((a, b) => {
             if (a.status !== b.status) {
               const order = { siap: 0, cooldown: 1, selesai: 2 }
@@ -127,7 +110,7 @@ export async function GET() {
             const ap = prioOrder[a.priority as string] ?? 1
             const bp = prioOrder[b.priority as string] ?? 1
             if (ap !== bp) return ap - bp
-            return 0 // no position needed after sort
+            return 0
           })
         })
         .catch((e) => {
@@ -136,26 +119,19 @@ export async function GET() {
         }),
 
       // ── Projects ──
-      db.project
-        .findMany({
-          where: { userId },
-          orderBy: { position: 'asc' },
-          select: { id: true, name: true, color: true, _count: { select: { tasks: true } } },
-        })
-        .catch((e) => {
-          console.error('[GET /api/init] projects fetch failed', e)
-          return null
-        }),
+      db.project.findMany({
+        where: { userId },
+        orderBy: { position: 'asc' },
+        select: { id: true, name: true, color: true, _count: { select: { tasks: true } } },
+      }).catch((e) => {
+        console.error('[GET /api/init] projects fetch failed', e)
+        return null
+      }),
 
-      // ── Settings ──
-      db.user
-        .findUnique({ where: { id: userId }, select: { settings: true } })
+      // ── Settings (fetched again for clean response — user query already has it) ──
+      db.user.findUnique({ where: { id: userId }, select: { settings: true } })
         .then((user) => {
-          try {
-            return user?.settings ? JSON.parse(user.settings) : {}
-          } catch {
-            return {}
-          }
+          try { return user?.settings ? JSON.parse(user.settings) : {} } catch { return {} }
         })
         .catch((e) => {
           console.error('[GET /api/init] settings fetch failed', e)
@@ -163,41 +139,45 @@ export async function GET() {
         }),
 
       // ── Notes ──
-      db.note
-        .findMany({
-          where: { userId },
-          select: { id: true, content: true, color: true, pinned: true, createdAt: true, updatedAt: true },
-          orderBy: [{ pinned: 'desc' }, { updatedAt: 'desc' }],
-        })
-        .catch((e) => {
-          console.error('[GET /api/init] notes fetch failed', e)
-          return null
-        }),
+      db.note.findMany({
+        where: { userId },
+        select: { id: true, content: true, color: true, pinned: true, createdAt: true, updatedAt: true },
+        orderBy: [{ pinned: 'desc' }, { updatedAt: 'desc' }],
+      }).catch((e) => {
+        console.error('[GET /api/init] notes fetch failed', e)
+        return null
+      }),
 
       // ── Templates ──
-      db.taskTemplate
-        .findMany({
-          where: { userId },
-          select: { id: true, name: true, description: true, link: true, scheduleType: true, scheduleConfig: true, priority: true, createdAt: true, updatedAt: true },
-          orderBy: { createdAt: 'desc' },
-        })
-        .catch((e) => {
-          console.error('[GET /api/init] templates fetch failed', e)
-          return null
-        }),
+      db.taskTemplate.findMany({
+        where: { userId },
+        select: { id: true, name: true, description: true, link: true, scheduleType: true, scheduleConfig: true, priority: true, createdAt: true, updatedAt: true },
+        orderBy: { createdAt: 'desc' },
+      }).catch((e) => {
+        console.error('[GET /api/init] templates fetch failed', e)
+        return null
+      }),
     ])
 
+    // Build user response without internal timezone field
+    const userResponse = userResult ? {
+      userId: (userResult as Record<string, unknown>).userId,
+      username: (userResult as Record<string, unknown>).username,
+      displayName: (userResult as Record<string, unknown>).displayName,
+      role: (userResult as Record<string, unknown>).role,
+      authenticated: true,
+    } : null
+
     const response = NextResponse.json({
-      user: userResult,
+      user: userResponse,
       tasks: tasksResult ?? [],
       projects: projectsResult ?? [],
-      settings: settingsResult ?? {},
+      settings: settingsOnlyResult ?? {},
       notes: notesResult ?? [],
       templates: templatesResult ?? [],
     })
 
     response.headers.set('Cache-Control', 'private, max-age=0, must-revalidate')
-
     return response
   } catch (e) {
     console.error('[GET /api/init] unexpected error', e)

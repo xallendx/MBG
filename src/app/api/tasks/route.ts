@@ -12,6 +12,11 @@ export async function GET() {
     const userId = await requireUser()
     if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+    // Fetch user settings for timezone
+    const user = await db.user.findUnique({ where: { id: userId }, select: { settings: true } }).catch(() => null)
+    let userTz = 'WIB'
+    try { userTz = user?.settings ? (JSON.parse(user.settings).timezone as string) || 'WIB' : 'WIB' } catch { /* use default */ }
+
     const tasks = await db.task.findMany({
       where: { userId },
       include: {
@@ -24,8 +29,8 @@ export async function GET() {
 
     const enriched = tasks.map(t => {
       try {
-        const status = computeStatus(t)
-        const nextReady = getNextReadyAt(t)
+        const status = computeStatus(t, userTz)
+        const nextReady = getNextReadyAt(t, userTz)
         const rawLastCompleted = t.logs.length > 0 ? t.logs[0].completedAt : null
         const lastCompleted = rawLastCompleted instanceof Date && !isNaN(rawLastCompleted.getTime()) ? rawLastCompleted : null
         let cooldownRemaining = ''

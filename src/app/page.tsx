@@ -908,7 +908,7 @@ export default function MBGPage() {
         })
         return changed ? next : prev
       })
-    }, 5000)
+    }, 1000)
     return () => clearInterval(tick)
   }, [])
 
@@ -927,13 +927,24 @@ export default function MBGPage() {
     }
   }, [tasks, dialogType, selectedTaskId])
 
-  /* ===== Time formatting helpers (12h/24h) ===== */
-  const timeOpts: Intl.DateTimeFormatOptions = formTimeFormat === '12'
-    ? { hour: '2-digit', minute: '2-digit', hour12: true }
-    : { hour: '2-digit', minute: '2-digit', hour12: false }
-  const fmtTime = (d: Date) => d.toLocaleTimeString('id-ID', timeOpts)
-  const fmtDate = (d: Date) => d.toLocaleString('id-ID', { day: '2-digit', month: 'short', ...timeOpts })
-  const fmtFull = (d: Date) => d.toLocaleString('id-ID', { day: '2-digit', month: '2-digit', year: 'numeric', ...timeOpts })
+  /* ===== Time formatting helpers (12h/24h) with timezone support ===== */
+  const userTzRef = useRef('Asia/Jakarta')
+  // Keep timezone ref in sync with settings
+  useEffect(() => {
+    const tz = (settings as Record<string, unknown>).timezone as string || 'WIB'
+    const TZ_MAP: Record<string, string> = { WIB: 'Asia/Jakarta', WITA: 'Asia/Makassar', WIT: 'Asia/Jayapura' }
+    userTzRef.current = TZ_MAP[tz] || 'Asia/Jakarta'
+  }, [settings])
+
+  const timeOpts: Intl.DateTimeFormatOptions = {
+    ...(formTimeFormat === '12'
+      ? { hour: '2-digit', minute: '2-digit', hour12: true }
+      : { hour: '2-digit', minute: '2-digit', hour12: false }),
+    timeZone: userTzRef.current,
+  }
+  const fmtTime = (d: Date) => d.toLocaleTimeString('id-ID', { ...timeOpts, timeZone: userTzRef.current })
+  const fmtDate = (d: Date) => d.toLocaleString('id-ID', { day: '2-digit', month: 'short', ...timeOpts, timeZone: userTzRef.current })
+  const fmtFull = (d: Date) => d.toLocaleString('id-ID', { day: '2-digit', month: '2-digit', year: 'numeric', ...timeOpts, timeZone: userTzRef.current })
 
   /* ===== Clock: direct DOM — no React re-render every second ===== */
   useEffect(() => {
@@ -941,9 +952,10 @@ export default function MBGPage() {
       const el = clockRef.current
       if (!el) return
       const fmt = el.dataset.fmt || '24'
-      const opts = fmt === '12'
-        ? { hour: '2-digit' as const, minute: '2-digit' as const, hour12: true as const }
-        : { hour: '2-digit' as const, minute: '2-digit' as const, hour12: false as const }
+      const tz = el.dataset.tz || 'Asia/Jakarta'
+      const opts: Intl.DateTimeFormatOptions = fmt === '12'
+        ? { hour: '2-digit' as const, minute: '2-digit' as const, hour12: true as const, timeZone: tz }
+        : { hour: '2-digit' as const, minute: '2-digit' as const, hour12: false as const, timeZone: tz }
       const timeStr = new Date().toLocaleTimeString('id-ID', opts)
       // Find or create the time text node
       let timeNode = el.querySelector('.clock-time')
@@ -2944,7 +2956,7 @@ export default function MBGPage() {
         {/* Status bar */}
         <div className="win95-statusbar">
           <div className="win95-statusbar-section">{projects.length} folder, {activeTasks.length} aktif{totalArchived > 0 && <span style={{ color: '#808080' }}> (+{totalArchived} arsip)</span>}{searchQuery && <span style={{ color: '#000080' }}> | Cari...</span>}{globalLoading && <span className="syncing-indicator"> ⟳ sinkronisasi...</span>}</div>
-          <span ref={clockRef} className="win95-statusbar-section fixed" title="Jam saat ini" data-fmt={settings.timeFormat || '24'}>🕐 </span>
+          <span ref={clockRef} className="win95-statusbar-section fixed" title="Jam saat ini" data-fmt={settings.timeFormat || '24'} data-tz={userTzRef.current}>🕐 </span>
           {telegramLinked && <div className="win95-statusbar-section fixed" title="Telegram">📱</div>}
           <div className="win95-statusbar-section fixed">{settings.timezone || 'WIB'}</div>
         </div>
@@ -3037,7 +3049,7 @@ export default function MBGPage() {
               )}
             </div>
             <div className="win95-dialog-footer">
-              <button className="win95-btn primary" disabled={!formName.trim() || savingTask} onClick={() => saveTask()}>OK</button>
+              <button className="win95-btn primary" disabled={!formName.trim() || savingTask} onClick={() => saveTask()} style={savingTask ? { opacity: 0.6, cursor: 'wait' } : {}}>{savingTask ? '⏳ Menyimpan...' : 'OK'}</button>
               <button className="win95-btn" onClick={() => setDialogType(null)}>Batal</button>
               <div style={{ flex: 1, fontSize: 9, color: '#808080', textAlign: 'right' }}>Ctrl+Enter untuk simpan</div>
             </div>
