@@ -28,7 +28,7 @@ interface Settings {
   telegramChatId?: string; telegramBotUsername?: string
   telegramNotifEnabled?: boolean; browserNotifEnabled?: boolean
   autoExpandSiap?: boolean; autoCompleteLink?: boolean
-  pomodoroDuration?: number; audioAlertEnabled?: boolean
+  notifyBeforeCooldownMin?: number; audioAlertEnabled?: boolean
   timeFormat?: string
 }
 
@@ -168,12 +168,6 @@ export default function MBGPage() {
   const workingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const undoTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // Pomodoro Timer (Feature 4)
-  const [pomodoroSeconds, setPomodoroSeconds] = useState(25 * 60)
-  const [pomodoroRunning, setPomodoroRunning] = useState(false)
-  const [pomodoroTaskId, setPomodoroTaskId] = useState<string | null>(null)
-  const pomodoroTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
-
   // Templates (Feature 3)
   const [templates, setTemplates] = useState<TaskTemplate[]>([])
   const [templateDialogOpen, setTemplateDialogOpen] = useState(false)
@@ -199,7 +193,7 @@ export default function MBGPage() {
   const [formAutoCompleteLink, setFormAutoCompleteLink] = useState(false)
   const [formTelegramNotif, setFormTelegramNotif] = useState(true)
   const [formBrowserNotif, setFormBrowserNotif] = useState(true)
-  const [formPomodoroDuration, setFormPomodoroDuration] = useState(25)
+  const [formNotifyBeforeMin, setFormNotifyBeforeMin] = useState(5)
   const [formAudioAlertEnabled, setFormAudioAlertEnabled] = useState(true)
   const [formProjectId, setFormProjectId] = useState<string | null>(null)
   const [formPriority, setFormPriority] = useState('medium')
@@ -445,7 +439,7 @@ export default function MBGPage() {
     setFormAutoCompleteLink(sd.autoCompleteLink === true)
     setFormTelegramNotif(sd.telegramNotifEnabled !== false)
     setFormBrowserNotif(sd.browserNotifEnabled !== false)
-    setFormPomodoroDuration(Number(sd.pomodoroDuration) || 25)
+    setFormNotifyBeforeMin(Number(sd.notifyBeforeCooldownMin) || 5)
     setFormAudioAlertEnabled(sd.audioAlertEnabled !== false)
     setTelegramLinked(!!sd.telegramChatId || !!sd.telegramId)
     setTelegramName(String(sd.telegramName || ''))
@@ -815,12 +809,13 @@ export default function MBGPage() {
     }
     prevTasksRef.current = curr
 
-    // Cek task yang hampir siap (< 2 menit)
+    // Cek task yang hampir siap (based on user setting: notifyBeforeCooldownMin)
+    const notifyBeforeMs = ((settings as Record<string, unknown>).notifyBeforeCooldownMin as number || 5) * 60 * 1000
     for (const t of tasks) {
-      if (t.status === 'cooldown' && t.cooldownMs > 0 && t.cooldownMs <= 120000) {
+      if (t.status === 'cooldown' && t.cooldownMs > 0 && t.cooldownMs <= notifyBeforeMs) {
         const p = prev.get(t.id)
-        // Baru masuk zona 2 menit
-        if (p && (p.cooldownMs > 120000 || p.status === 'siap')) {
+        // Baru masuk zona notifikasi
+        if (p && (p.cooldownMs > notifyBeforeMs || p.status === 'siap')) {
           hasAlmostReady = true
           almostReadyNames.push(t.name)
         }
@@ -842,16 +837,17 @@ export default function MBGPage() {
       playAlertReady()
     }
 
-    // Notif browser: task hampir siap (masuk zona 2 menit)
+    // Notif browser: task hampir siap (based on user setting)
     if (hasAlmostReady && (settings as Record<string, unknown>).browserNotifEnabled !== false) {
+      const minLabel = (settings as Record<string, unknown>).notifyBeforeCooldownMin || 5
       if (almostReadyNames.length === 1) {
-        sendBrowserNotif('⏰ Hampir Siap!', almostReadyNames[0] + ' — kurang dari 2 menit')
+        sendBrowserNotif('⏰ Hampir Siap!', almostReadyNames[0] + ` — kurang dari ${minLabel} menit`)
         toast('⏰ Hampir siap: ' + almostReadyNames[0], 'info')
       } else if (almostReadyNames.length <= 3) {
         sendBrowserNotif('⏰ Hampir Siap!', almostReadyNames.join(', '))
         toast('⏰ ' + almostReadyNames.length + ' task hampir siap!', 'info')
       } else {
-        sendBrowserNotif('⏰ Hampir Siap!', almostReadyNames.length + ' task kurang dari 2 menit')
+        sendBrowserNotif('⏰ Hampir Siap!', almostReadyNames.length + ` task kurang dari ${minLabel} menit`)
         toast('⏰ ' + almostReadyNames.length + ' task hampir siap!', 'info')
       }
       // Audio alert for almost ready
@@ -988,7 +984,7 @@ export default function MBGPage() {
     return () => {
       if (workingTimerRef.current) clearInterval(workingTimerRef.current)
       if (undoTimerRef.current) clearInterval(undoTimerRef.current)
-      if (pomodoroTimerRef.current) clearInterval(pomodoroTimerRef.current)
+      // Notification settings: notifyBeforeCooldownMin
       if (longPressTimerRef.current) { clearTimeout(longPressTimerRef.current); longPressTimerRef.current = null }
       if (globalLoadingTimerRef.current) { clearTimeout(globalLoadingTimerRef.current); globalLoadingTimerRef.current = null }
       if (saveToCacheRaf.current) cancelAnimationFrame(saveToCacheRaf.current)
@@ -1866,12 +1862,12 @@ export default function MBGPage() {
   /* ===== Settings ===== */
   const saveSettings = async () => {
     // Optimistic: apply settings locally immediately
-    const newSettings = { ...settings, timezone: formTimezone, timeFormat: formTimeFormat, autoExpandSiap: formAutoExpandSiap, autoCompleteLink: formAutoCompleteLink, telegramNotifEnabled: formTelegramNotif, browserNotifEnabled: formBrowserNotif, pomodoroDuration: formPomodoroDuration, audioAlertEnabled: formAudioAlertEnabled }
+    const newSettings = { ...settings, timezone: formTimezone, timeFormat: formTimeFormat, autoExpandSiap: formAutoExpandSiap, autoCompleteLink: formAutoCompleteLink, telegramNotifEnabled: formTelegramNotif, browserNotifEnabled: formBrowserNotif, notifyBeforeCooldownMin: formNotifyBeforeMin, audioAlertEnabled: formAudioAlertEnabled }
     setSettings(newSettings)
     toast('Disimpan!', 'success')
     setDialogType(null)
     try {
-      const res = await api('/api/settings', jsonOpts('PUT', { timezone: formTimezone, timeFormat: formTimeFormat, autoExpandSiap: formAutoExpandSiap, autoCompleteLink: formAutoCompleteLink, telegramNotifEnabled: formTelegramNotif, browserNotifEnabled: formBrowserNotif, pomodoroDuration: formPomodoroDuration, audioAlertEnabled: formAudioAlertEnabled }))
+      const res = await api('/api/settings', jsonOpts('PUT', { timezone: formTimezone, timeFormat: formTimeFormat, autoExpandSiap: formAutoExpandSiap, autoCompleteLink: formAutoCompleteLink, telegramNotifEnabled: formTelegramNotif, browserNotifEnabled: formBrowserNotif, notifyBeforeCooldownMin: formNotifyBeforeMin, audioAlertEnabled: formAudioAlertEnabled }))
       if (!res.ok) { toast('Gagal menyimpan di server', 'error'); return }
       // If user disabled browser notif, unregister push subscription
       if (formBrowserNotif !== settings.browserNotifEnabled && !formBrowserNotif) {
@@ -1905,7 +1901,7 @@ export default function MBGPage() {
   const openDetail = (t: Task) => { if (Date.now() - ctxOpenTimeRef.current < 300) return; detailRef.current = t; setSelectedTaskId(t.id); setDialogType('detail') }
   const openEditProject = (p: Project) => { setFormProjectName(p.name); setFormProjectColor(p.color); setSelectedTaskId(p.id); setDialogType('edit-project') }
   const openAddProject = () => { setFormProjectName(''); setFormProjectColor('#000080'); setDialogType('add-project') }
-  const openSettings = () => { const s = settings as Record<string, unknown>; setFormTimezone((s.timezone as string) || 'WIB'); setFormTimeFormat(s.timeFormat === '12' ? '12' : '24'); setFormAutoExpandSiap(s.autoExpandSiap !== false); setFormAutoCompleteLink(s.autoCompleteLink === true); setFormTelegramNotif(s.telegramNotifEnabled !== false); setFormBrowserNotif(s.browserNotifEnabled !== false); setFormPomodoroDuration((s.pomodoroDuration as number) || 25); setFormAudioAlertEnabled(s.audioAlertEnabled !== false); setDialogType('settings') }
+  const openSettings = () => { const s = settings as Record<string, unknown>; setFormTimezone((s.timezone as string) || 'WIB'); setFormTimeFormat(s.timeFormat === '12' ? '12' : '24'); setFormAutoExpandSiap(s.autoExpandSiap !== false); setFormAutoCompleteLink(s.autoCompleteLink === true); setFormTelegramNotif(s.telegramNotifEnabled !== false); setFormBrowserNotif(s.browserNotifEnabled !== false); setFormNotifyBeforeMin((s.notifyBeforeCooldownMin as number) || 5); setFormAudioAlertEnabled(s.audioAlertEnabled !== false); setDialogType('settings') }
 
   /* ===== Folder toggle ===== */
   const toggleFolder = (projectId: string) => {
@@ -2088,65 +2084,6 @@ export default function MBGPage() {
     setFormPriority(t.priority || 'medium')
     toast('Template "' + t.name + '" dimuat!', 'info')
   }
-
-  /* ===== Pomodoro Timer (Feature 4) ===== */
-  const pomodoroDuration = useMemo(() => (settings.pomodoroDuration || 25) * 60, [settings.pomodoroDuration])
-
-  useEffect(() => {
-    setPomodoroSeconds(pomodoroDuration)
-  }, [pomodoroDuration])
-
-  // Handle pomodoro completion side effects via useEffect (not inside setState)
-  useEffect(() => {
-    if (pomodoroSeconds === 0 && pomodoroRunning) {
-      setPomodoroRunning(false)
-      playAlertPomodoro()
-      toast('🍅 Pomodoro selesai! Saatnya istirahat.', 'success')
-    }
-  }, [pomodoroSeconds, pomodoroRunning, playAlertPomodoro])
-
-  const startPomodoro = (taskId: string) => {
-    if (pomodoroTimerRef.current) clearInterval(pomodoroTimerRef.current)
-    setPomodoroTaskId(taskId)
-    setPomodoroSeconds(pomodoroDuration)
-    setPomodoroRunning(true)
-    pomodoroTimerRef.current = setInterval(() => {
-      setPomodoroSeconds(prev => {
-        if (prev <= 1) {
-          if (pomodoroTimerRef.current) { clearInterval(pomodoroTimerRef.current); pomodoroTimerRef.current = null }
-          return 0
-        }
-        return prev - 1
-      })
-    }, 1000)
-  }
-
-  const pausePomodoro = () => {
-    if (pomodoroTimerRef.current) { clearInterval(pomodoroTimerRef.current); pomodoroTimerRef.current = null }
-    setPomodoroRunning(false)
-  }
-
-  const resumePomodoro = () => {
-    if (!pomodoroTaskId || pomodoroSeconds <= 0) return
-    setPomodoroRunning(true)
-    // Reuse same timer logic as startPomodoro
-    startPomodoro(pomodoroTaskId)
-    // Reset seconds to current value (startPomodoro sets to pomodoroDuration)
-    setPomodoroSeconds(pomodoroSeconds)
-  }
-
-  const resetPomodoro = () => {
-    if (pomodoroTimerRef.current) { clearInterval(pomodoroTimerRef.current); pomodoroTimerRef.current = null }
-    setPomodoroRunning(false)
-    setPomodoroSeconds(pomodoroDuration)
-    setPomodoroTaskId(null)
-  }
-
-  const pomodoroDisplay = useMemo(() => {
-    const m = Math.floor(pomodoroSeconds / 60)
-    const s = pomodoroSeconds % 60
-    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
-  }, [pomodoroSeconds])
 
   /* ===== Keyboard shortcuts ===== */
   useEffect(() => {
@@ -2390,18 +2327,6 @@ export default function MBGPage() {
                     </div>
                   </div>
                   <div className="working-timer">⏱ Otomatis selesai dalam <b>{workingCountdown}</b> detik</div>
-                  {/* Feature 4: Pomodoro timer */}
-                  <div className="pomodoro-section">
-                    <div className="pomodoro-display">🍅 {pomodoroDisplay}</div>
-                    {!pomodoroRunning && !pomodoroTaskId ? (
-                      <button className="win95-btn" onClick={e => { e.stopPropagation(); startPomodoro(wt.id) }} style={{ fontSize: 9, padding: '1px 8px' }}>▶ Mulai Pomodoro</button>
-                    ) : pomodoroRunning ? (
-                      <button className="win95-btn" onClick={e => { e.stopPropagation(); pausePomodoro() }} style={{ fontSize: 9, padding: '1px 8px' }}>⏸ Jeda</button>
-                    ) : (
-                      <button className="win95-btn" onClick={e => { e.stopPropagation(); resumePomodoro() }} style={{ fontSize: 9, padding: '1px 8px' }}>▶ Lanjut</button>
-                    )}
-                    <button className="win95-btn" onClick={e => { e.stopPropagation(); resetPomodoro() }} style={{ fontSize: 9, padding: '1px 8px' }}>⏹ Reset</button>
-                  </div>
                   <button className="win95-btn" onClick={e => { e.stopPropagation(); cancelWorking() }} style={{ fontSize: 10, padding: '2px 10px' }}>❌ Batalkan</button>
                 </>
               )}
@@ -3155,19 +3080,19 @@ export default function MBGPage() {
                     <input type="checkbox" className="task-checkbox" checked={formAudioAlertEnabled} onChange={e => setFormAudioAlertEnabled(e.target.checked)} />
                     <span><b>🔊 Suara</b> peringatan</span>
                   </label>
-                  <div style={{ fontSize: 10, color: '#808080', marginLeft: 20 }}>Bunyi beep saat task hampir siap / siap / pomodoro selesai</div>
+                  <div style={{ fontSize: 10, color: '#808080', marginLeft: 20 }}>Bunyi beep saat task hampir siap / siap</div>
                 </div>
               </fieldset>
-              {/* Feature 4: Pomodoro duration */}
-              <fieldset className="win95-group"><legend>🍅 Pomodoro Timer</legend>
+              {/* Notification timing: how many minutes before cooldown ends */}
+              <fieldset className="win95-group"><legend>🔔 Timing Notifikasi Cooldown</legend>
                 <div style={{ padding: '6px 8px', fontSize: 11, lineHeight: 1.8 }}>
                   <div className="win95-field" style={{ marginBottom: 4 }}>
-                    <label>Durasi (menit)</label>
+                    <label>Notif sebelum cooldown selesai</label>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <input type="range" min={5} max={120} step={5} value={formPomodoroDuration} onChange={e => setFormPomodoroDuration(+e.target.value)} style={{ flex: 1 }} />
-                      <span style={{ fontWeight: 'bold', minWidth: 36, textAlign: 'center' }}>{formPomodoroDuration} mnt</span>
+                      <input type="range" min={1} max={30} step={1} value={formNotifyBeforeMin} onChange={e => setFormNotifyBeforeMin(+e.target.value)} style={{ flex: 1 }} />
+                      <span style={{ fontWeight: 'bold', minWidth: 36, textAlign: 'center' }}>{formNotifyBeforeMin} mnt</span>
                     </div>
-                    <div style={{ fontSize: 10, color: '#808080', marginTop: 2 }}>5-120 menit (default: 25)</div>
+                    <div style={{ fontSize: 10, color: '#808080', marginTop: 2 }}>Notifikasi Windows/browser muncul {formNotifyBeforeMin} menit sebelum task siap (default: 5)</div>
                   </div>
                 </div>
               </fieldset>
@@ -3659,10 +3584,10 @@ export default function MBGPage() {
               </div>
 
               <div className="help-section">
-                <div className="help-section-title">🍅 Pomodoro Timer</div>
-                <div className="help-item">Timer focus yang bisa diatur di Pengaturan (5-120 menit)</div>
-                <div className="help-item">Mulai dari panel Kerjakan task yang siap</div>
-                <div className="help-item">Notifikasi suara saat selesai</div>
+                <div className="help-section-title">🔔 Notifikasi Cooldown</div>
+                <div className="help-item">Atur di Pengaturan: berapa menit sebelum cooldown selesai, notifikasi muncul</div>
+                <div className="help-item">Mendukung notifikasi browser/Windows dan suara beep</div>
+                <div className="help-item">Default: 5 menit sebelum task siap</div>
               </div>
 
               <div className="help-section">
