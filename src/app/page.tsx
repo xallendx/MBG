@@ -973,6 +973,11 @@ export default function MBGPage() {
     toastTimersRef.current.push(timer)
   }
 
+  /* ===== Auto-close notes panel when dialog opens (z-index conflict fix) ===== */
+  useEffect(() => {
+    if (dialogType) setNotesPanelOpen(false)
+  }, [dialogType])
+
   /* ===== Task CRUD ===== */
   // Ref-based guard for double-completion (avoids stale closure issue with completingIds state)
   const completingIdsRef = useRef<Set<string>>(new Set())
@@ -1023,37 +1028,96 @@ export default function MBGPage() {
     })
   }
 
-  const saveTask = async () => {
+  const saveTask = async (skipDialogClose?: boolean) => {
     if (savingTask) return
     if (!formName.trim()) { toast('Nama wajib diisi!', 'error'); return }
+    const isAdd = dialogType === 'add'
+    const isEdit = dialogType === 'edit' && selectedTaskId
+    if (!isAdd && !isEdit) return
+
+    // Capture form values before any state changes
+    const taskName = formName.trim()
+    const taskDesc = formDesc || null
+    const taskLink = formLink || null
+    const taskScheduleType = formScheduleType
+    const taskScheduleConfig = formScheduleConfig
+    const taskProjectId = (formProjectId && formProjectId !== '__no_project__') ? formProjectId : null
+    const taskPriority = formPriority
+    const editTaskId = selectedTaskId
+
     setSavingTask(true)
     showGlobalLoading()
+
+    // Optimistic update for ADD: create temp task immediately
+    let tempId: string | null = null
+    if (isAdd) {
+      tempId = 'temp-' + Date.now()
+      const newTask: Task = {
+        id: tempId, name: taskName, description: taskDesc, link: taskLink,
+        scheduleType: taskScheduleType, scheduleConfig: typeof taskScheduleConfig === 'string' ? taskScheduleConfig : JSON.stringify(taskScheduleConfig),
+        notes: null, pinned: false, priority: taskPriority,
+        status: 'siap', nextReadyAt: null, lastCompletedAt: null,
+        cooldownRemaining: '', cooldownMs: 0,
+        project: taskProjectId ? projects.find(p => p.id === taskProjectId) || null : null,
+        createdAt: new Date().toISOString()
+      }
+      setTasks(prev => [newTask, ...prev])
+      if (taskProjectId) setExpandedProjects(prev => new Set(prev).add(taskProjectId))
+    }
+    // Optimistic update for EDIT: update task in local state immediately
+    if (isEdit && editTaskId) {
+      setTasks(prev => prev.map(t => t.id === editTaskId ? {
+        ...t, name: taskName, description: taskDesc, link: taskLink,
+        scheduleType: taskScheduleType, scheduleConfig: typeof taskScheduleConfig === 'string' ? taskScheduleConfig : JSON.stringify(taskScheduleConfig),
+        priority: taskPriority
+      } : t))
+    }
+
+    // Close dialog immediately — user can already see the change
+    if (!skipDialogClose) {
+      setDialogType(null)
+      setSelectedTaskId(null)
+    }
+
     try {
       const body = JSON.stringify({
-        name: formName, description: formDesc || null, link: formLink || null,
-        scheduleType: formScheduleType, scheduleConfig: formScheduleConfig,
-        projectId: (formProjectId && formProjectId !== '__no_project__') ? formProjectId : null,
-        priority: formPriority
+        name: taskName, description: taskDesc, link: taskLink,
+        scheduleType: taskScheduleType, scheduleConfig: taskScheduleConfig,
+        projectId: taskProjectId, priority: taskPriority
       })
       const makeOpts = (method: string) => ({ method, headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }, body, credentials: 'include' as RequestCredentials })
       let res: Response
-      if (dialogType === 'add') {
+      if (isAdd) {
         res = await fetch('/api/tasks', makeOpts('POST'))
-        if (!res.ok) { const err = await res.json().catch(() => ({})); toast('Gagal: ' + (err.error || res.statusText), 'error'); return }
-        toast('Task ditambahkan!', 'success')
-        if (formProjectId && formProjectId !== '__no_project__') {
-          setExpandedProjects(prev => new Set(prev).add(formProjectId))
+        if (!res.ok) {
+          // Revert optimistic update on failure
+          if (tempId) setTasks(prev => prev.filter(t => t.id !== tempId))
+          const err = await res.json().catch(() => ({})); toast('Gagal: ' + (err.error || res.statusText), 'error'); return
         }
-      } else if (dialogType === 'edit' && selectedTaskId) {
-        res = await fetch(`/api/tasks/${selectedTaskId}`, makeOpts('PUT'))
-        if (!res.ok) { const err = await res.json().catch(() => ({})); toast('Gagal: ' + (err.error || res.statusText), 'error'); return }
+        const data = await res.json()
+        toast('Task ditambahkan!', 'success')
+        // Replace temp ID with real ID
+        if (tempId && data.id) {
+          setTasks(prev => prev.map(t => t.id === tempId ? { ...t, id: data.id } : t))
+        }
+      } else if (isEdit && editTaskId) {
+        res = await fetch(`/api/tasks/${editTaskId}`, makeOpts('PUT'))
+        if (!res.ok) {
+          // Revert on failure — re-fetch from server
+          const err = await res.json().catch(() => ({})); toast('Gagal: ' + (err.error || res.statusText), 'error')
+          delayedFetch()
+          return
+        }
         toast('Task diperbarui!', 'success')
-      } else return
-      setDialogType(null); setSelectedTaskId(null)
-      // Delayed fetch for server sync (handles Neon pgbouncer read-after-write latency)
+      }
       lastWriteTime.current = Date.now()
       delayedFetch()
-    } catch (e) { console.error(e); toast('Gagal menyimpan task', 'error') }
+    } catch (e) {
+      console.error(e)
+      // Revert optimistic add on network error
+      if (isAdd && tempId) setTasks(prev => prev.filter(t => t.id !== tempId))
+      toast('Gagal menyimpan task', 'error')
+    }
     finally { setSavingTask(false); hideGlobalLoading() }
   }
 
@@ -1815,17 +1879,20 @@ export default function MBGPage() {
     if (!formTemplateName.trim()) { toast('Nama template wajib diisi!', 'error'); return }
     showGlobalLoading()
     try {
+      let res: Response
       if (editingTemplate) {
-        await api(`/api/templates/${editingTemplate.id}`, jsonOpts('PUT', {
+        res = await api(`/api/templates/${editingTemplate.id}`, jsonOpts('PUT', {
           name: formTemplateName, description: formTemplateDesc || null, link: formTemplateLink || null,
           scheduleType: formTemplateScheduleType, scheduleConfig: formTemplateScheduleConfig, priority: formTemplatePriority
         }))
+        if (!res.ok) { toast('Gagal memperbarui template', 'error'); return }
         toast('Template diperbarui!', 'success')
       } else {
-        await api('/api/templates', jsonOpts('POST', {
+        res = await api('/api/templates', jsonOpts('POST', {
           name: formTemplateName, description: formTemplateDesc || null, link: formTemplateLink || null,
           scheduleType: formTemplateScheduleType, scheduleConfig: formTemplateScheduleConfig, priority: formTemplatePriority
         }))
+        if (!res.ok) { toast('Gagal menambahkan template', 'error'); return }
         toast('Template ditambahkan!', 'success')
       }
       setFormTemplateName(''); setFormTemplateDesc(''); setFormTemplateLink('')
@@ -2605,7 +2672,7 @@ export default function MBGPage() {
             <div style={{ position: 'relative', marginLeft: 4 }}>
               <button className="win95-titlebar-btn" onClick={e => { e.stopPropagation(); setProfileMenuOpen(!profileMenuOpen) }} title="Profil Akun">👤</button>
               {profileMenuOpen && (
-                <div className="win95-dropdown" style={{ position: 'absolute', right: 0, top: '100%', zIndex: 9999, minWidth: 180 }}>
+                <div className="win95-dropdown" style={{ position: 'absolute', right: 0, top: '100%', zIndex: 9999, minWidth: 180 }} onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
                   <div className="win95-dropdown-item" style={{ cursor: 'default', opacity: 0.9, fontSize: 11, fontWeight: 'bold' }}>{authUser?.displayName || authUser?.username || 'User'}</div>
                   <div className="win95-dropdown-item" style={{ cursor: 'default', opacity: 0.5, fontSize: 10 }}>@{authUser?.username} | {projects.length} project, {activeTasks.length} aktif{totalArchived > 0 ? ` (+${totalArchived} arsip)` : ''}</div>
                   {isAdmin && <div className="win95-dropdown-item" style={{ cursor: 'default', opacity: 0.7, fontSize: 10 }}>👑 ADMIN</div>}
@@ -2632,7 +2699,7 @@ export default function MBGPage() {
           <div className="win95-menubar-item" onClick={e => { e.stopPropagation(); setOpenMenu(openMenu === 'file' ? null : 'file') }}>
             File
             {openMenu === 'file' && (
-              <div className="win95-dropdown">
+              <div className="win95-dropdown" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
                 <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); openAddProject(); setOpenMenu(null) }}>📁 Buat Project Baru</div>
                 <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); openAddStandalone(); setOpenMenu(null) }}>📌 Buat Task Baru</div>
                 <div className="win95-dropdown-sep" />
@@ -2646,7 +2713,7 @@ export default function MBGPage() {
           <div className="win95-menubar-item" onClick={e => { e.stopPropagation(); setOpenMenu(openMenu === 'view' ? null : 'view') }}>
             Lihat
             {openMenu === 'view' && (
-              <div className="win95-dropdown">
+              <div className="win95-dropdown" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
                 <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); setViewMode('dashboard'); setActiveTab('all'); setDashFilterQuery(''); setDashFilterProject(null); setOpenMenu(null) }}>📋 Dashboard</div>
                 <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); setViewMode('monitor'); setActiveTab('all'); setOpenMenu(null) }}>📊 Monitor</div>
                 <div className="win95-dropdown-sep" />
@@ -2663,7 +2730,7 @@ export default function MBGPage() {
           <div className="win95-menubar-item" onClick={e => { e.stopPropagation(); setOpenMenu(openMenu === 'tools' ? null : 'tools') }}>
             Alat
             {openMenu === 'tools' && (
-              <div className="win95-dropdown">
+              <div className="win95-dropdown" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
                 <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); setDialogType('telegram'); setOpenMenu(null) }}>Telegram</div>
                 <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); openSettings(); setOpenMenu(null) }}>Pengaturan</div>
                 <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); setDialogType('templates'); fetchTemplates(); setOpenMenu(null) }}>📋 Template Task</div>
@@ -2785,7 +2852,7 @@ export default function MBGPage() {
           <div className="win95-dialog" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
             <div className="win95-titlebar"><span className="win95-titlebar-text">📁 Buat Project Baru</span><button className="win95-titlebar-btn" onClick={() => setDialogType(null)}>✕</button></div>
             <div className="win95-dialog-body">
-              <div className="win95-field"><label>Nama Project *</label><input type="text" className="win95-input" value={formProjectName} onChange={e => setFormProjectName(e.target.value)} placeholder="Contoh: LayerZero" autoFocus onKeyDown={e => { if (e.key === 'Enter' && formProjectName.trim() && !savingProject) { addProject(formProjectName, formProjectColor).then(() => setDialogType(null)) } }} /></div>
+              <div className="win95-field"><label>Nama Project *</label><input type="text" className="win95-input" value={formProjectName} onChange={e => setFormProjectName(e.target.value)} placeholder="Contoh: LayerZero" autoFocus onKeyDown={e => { if (e.key === 'Enter' && formProjectName.trim() && !savingProject) { const n = formProjectName.trim(), c = formProjectColor; setDialogType(null); addProject(n, c) } }} /></div>
               <div className="win95-field"><label>Warna</label>
                 <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                   {PROJECT_COLORS.map(c => (
@@ -2796,10 +2863,10 @@ export default function MBGPage() {
               </div>
             </div>
             <div className="win95-dialog-footer">
-              <button className="win95-btn primary" disabled={savingProject} onClick={() => { if (formProjectName.trim() && !savingProject) { addProject(formProjectName, formProjectColor).then(() => setDialogType(null)) } }}>
-                {savingProject ? <span className="btn-loading-text">⏳ Membuat...</span> : 'Buat'}
+              <button className="win95-btn primary" disabled={!formProjectName.trim() || savingProject} onClick={() => { const n = formProjectName.trim(), c = formProjectColor; setDialogType(null); addProject(n, c) }}>
+                Buat
               </button>
-              <button className="win95-btn" disabled={savingProject} onClick={() => setDialogType(null)}>Batal</button>
+              <button className="win95-btn" onClick={() => setDialogType(null)}>Batal</button>
             </div>
           </div>
         </div>
@@ -2863,8 +2930,8 @@ export default function MBGPage() {
               )}
             </div>
             <div className="win95-dialog-footer">
-              <button className="win95-btn primary" disabled={savingTask} onClick={saveTask}>{savingTask ? <span className="btn-loading-text">⏳ Menyimpan...</span> : 'OK'}</button>
-              <button className="win95-btn" disabled={savingTask} onClick={() => setDialogType(null)}>Batal</button>
+              <button className="win95-btn primary" disabled={!formName.trim() || savingTask} onClick={() => saveTask()}>OK</button>
+              <button className="win95-btn" onClick={() => setDialogType(null)}>Batal</button>
               <div style={{ flex: 1, fontSize: 9, color: '#808080', textAlign: 'right' }}>Ctrl+Enter untuk simpan</div>
             </div>
           </div>
@@ -3362,7 +3429,7 @@ export default function MBGPage() {
       {/* ===== HELP DIALOG ===== */}
       {dialogType === 'help' && (
         <div className="win95-dialog-overlay" onClick={() => setDialogType(null)}>
-          <div className="win95-dialog help-dialog" onClick={e => e.stopPropagation()}>
+          <div className="win95-dialog help-dialog" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
             <div className="win95-titlebar"><span className="win95-titlebar-text">📖 Petunjuk Penggunaan</span><button className="win95-titlebar-btn" onClick={() => setDialogType(null)}>✕</button></div>
             <div className="win95-dialog-body help-body">
               <div className="help-section">
