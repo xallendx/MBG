@@ -357,22 +357,29 @@ export default function MBGPage() {
   const longPressProjectRef = useRef<Project | null>(null)
 
   /* ===== Local Cache — instant load from localStorage ===== */
-  const CACHE_KEY = 'mbg_cache'
   const CACHE_VERSION = 3
   const cacheLoadRef = useRef(false) // Track if we loaded from cache this session
 
   // Refs to track latest state for cache writes (avoids stale closures)
-  const tasksCacheRef = useRef<Task[]>([])
-  const projectsCacheRef = useRef<Project[]>([])
-  const notesCacheRef = useRef<Note[]>([])
-  const templatesCacheRef = useRef<TaskTemplate[]>([])
-  const settingsCacheRef = useRef<Settings>({})
+  const tasksCacheRef = useRef<Task[] | null>(null) // null = not yet loaded
+  const projectsCacheRef = useRef<Project[] | null>(null)
+  const notesCacheRef = useRef<Note[] | null>(null)
+  const templatesCacheRef = useRef<TaskTemplate[] | null>(null)
+  const settingsCacheRef = useRef<Settings | null>(null)
+
+  // Dynamic cache key based on user ID — prevents cross-user data leak
+  const getCacheKey = useCallback(() => {
+    const uid = authUser?.id || 'anon'
+    return `mbg_cache_${uid}`
+  }, [authUser?.id])
 
   // Load data from localStorage cache (instant, 0ms)
   const loadFromCache = useCallback(() => {
     if (typeof window === 'undefined') return false
+    // Don't load cache for anonymous users
+    if (!authUser?.id) return false
     try {
-      const raw = localStorage.getItem(CACHE_KEY)
+      const raw = localStorage.getItem(getCacheKey())
       if (!raw) return false
       const cache = JSON.parse(raw)
       if (cache.v !== CACHE_VERSION || !cache.ts) return false
@@ -416,27 +423,43 @@ export default function MBGPage() {
       }
       return true
     } catch { return false }
-  }, [])
+  }, [authUser?.id, getCacheKey])
 
   // Save current state to localStorage cache (debounced via rAF)
   const saveToCacheRaf = useRef(0)
   const saveToCache = useCallback(() => {
-    if (typeof window === 'undefined') return
+    if (typeof window === 'undefined') return false
+    if (!authUser?.id) return false // Don't cache for anonymous
+    if (!tasksCacheRef.current) return false // Don't cache empty/uninitialized state
     try {
       cancelAnimationFrame(saveToCacheRaf.current)
       saveToCacheRaf.current = requestAnimationFrame(() => {
-        localStorage.setItem(CACHE_KEY, JSON.stringify({
+        localStorage.setItem(getCacheKey(), JSON.stringify({
           v: CACHE_VERSION,
           ts: Date.now(),
           tasks: tasksCacheRef.current,
-          projects: projectsCacheRef.current,
-          notes: notesCacheRef.current,
-          templates: templatesCacheRef.current,
-          settings: settingsCacheRef.current
+          projects: projectsCacheRef.current || [],
+          notes: notesCacheRef.current || [],
+          templates: templatesCacheRef.current || [],
+          settings: settingsCacheRef.current || {}
         }))
       })
-    } catch { /* storage full or disabled */ }
-  }, [])
+      return true
+    } catch { return false }
+  }, [authUser?.id, getCacheKey])
+
+  // Clear cache for current user
+  const clearCache = useCallback(() => {
+    if (typeof window === 'undefined') return
+    try { localStorage.removeItem(getCacheKey()) } catch { /* ignore */ }
+    // Also clear old cache key (before user-specific keys)
+    try { localStorage.removeItem('mbg_cache') } catch { /* ignore */ }
+    tasksCacheRef.current = null
+    projectsCacheRef.current = null
+    notesCacheRef.current = null
+    templatesCacheRef.current = null
+    settingsCacheRef.current = null
+  }, [getCacheKey])
 
   /* ===== Request Deduplication — prevent duplicate concurrent requests ===== */
   const pendingRequests = useRef<Map<string, Promise<unknown>>>(new Map())
@@ -530,8 +553,8 @@ export default function MBGPage() {
       // STEP 0: Load from cache FIRST (instant — 0ms)
       if (!cacheLoadRef.current && !isManualRefresh) {
         const loaded = loadFromCache()
+        cacheLoadRef.current = true // Mark as attempted (even if no cache found)
         if (loaded) {
-          cacheLoadRef.current = true
           setLoading(false) // Show cached data immediately!
         }
       }
@@ -901,12 +924,12 @@ export default function MBGPage() {
     }
   }, [])
 
-  // Sync React state → cache refs (so optimistic mutations get cached too)
-  useEffect(() => { tasksCacheRef.current = tasks }, [tasks])
-  useEffect(() => { projectsCacheRef.current = projects }, [projects])
-  useEffect(() => { notesCacheRef.current = notes }, [notes])
-  useEffect(() => { templatesCacheRef.current = templates }, [templates])
-  useEffect(() => { settingsCacheRef.current = settings }, [settings])
+  // Sync React state → cache refs (only when authenticated and not loading)
+  useEffect(() => { if (authenticated && !loading) tasksCacheRef.current = tasks }, [tasks, authenticated, loading])
+  useEffect(() => { if (authenticated && !loading) projectsCacheRef.current = projects }, [projects, authenticated, loading])
+  useEffect(() => { if (authenticated && !loading) notesCacheRef.current = notes }, [notes, authenticated, loading])
+  useEffect(() => { if (authenticated && !loading) templatesCacheRef.current = templates }, [templates, authenticated, loading])
+  useEffect(() => { if (authenticated && !loading) settingsCacheRef.current = settings }, [settings, authenticated, loading])
 
   const toast = (msg: string, type: 'success' | 'error' | 'info' = 'info') => {
     const id = Date.now() + Math.random()
@@ -1485,6 +1508,7 @@ export default function MBGPage() {
         setAuthenticated(false)
         setAuthUser(null)
         persistAuth(null)
+        clearCache() // Clear user's cached data on logout
         setTasks([])
         setProjects([])
         setNotes([])
