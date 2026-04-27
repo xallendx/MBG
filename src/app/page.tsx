@@ -169,6 +169,12 @@ export default function MBGPage() {
   // Fix #7: Batch completing
   const [batchCompleting, setBatchCompleting] = useState<string | null>(null)
   const [savingTask, setSavingTask] = useState(false)
+  const [savingProject, setSavingProject] = useState(false)
+  // Global loading bar: shows thin progress at top of window during any async operation
+  const [globalLoading, setGlobalLoading] = useState(false)
+  const globalLoadingRef = useRef(false)
+  const showGlobalLoading = useCallback(() => { globalLoadingRef.current = true; setGlobalLoading(true) }, [])
+  const hideGlobalLoading = useCallback(() => { globalLoadingRef.current = false; setGlobalLoading(false) }, [])
 
   // Fix #9: Move dialog
   const [moveDialogTask, setMoveDialogTask] = useState<Task | null>(null)
@@ -773,6 +779,7 @@ export default function MBGPage() {
   const complete = async (id: string) => {
     if (completingIds.has(id)) return
     setCompletingIds(p => new Set(p).add(id))
+    showGlobalLoading()
     try {
       const res = await api(`/api/tasks/${id}/complete`, { method: 'POST' })
       if (!res.ok) { toast('Gagal menyelesaikan task', 'error'); return }
@@ -783,7 +790,7 @@ export default function MBGPage() {
       delayedFetch()
     }
     catch { toast('Gagal menyelesaikan task', 'error') }
-    finally { setCompletingIds(p => { const n = new Set(p); n.delete(id); return n }) }
+    finally { setCompletingIds(p => { const n = new Set(p); n.delete(id); return n }); hideGlobalLoading() }
   }
 
   const resetTask = async (id: string) => {
@@ -817,6 +824,7 @@ export default function MBGPage() {
     if (savingTask) return
     if (!formName.trim()) { toast('Nama wajib diisi!', 'error'); return }
     setSavingTask(true)
+    showGlobalLoading()
     try {
       const body = JSON.stringify({
         name: formName, description: formDesc || null, link: formLink || null,
@@ -843,7 +851,7 @@ export default function MBGPage() {
       lastWriteTime.current = Date.now()
       delayedFetch()
     } catch (e) { console.error(e); toast('Gagal menyimpan task', 'error') }
-    finally { setSavingTask(false) }
+    finally { setSavingTask(false); hideGlobalLoading() }
   }
 
   const saveNotes = async (id: string, notes: string) => {
@@ -949,20 +957,35 @@ export default function MBGPage() {
 
   /* ===== Project CRUD ===== */
   const addProject = async (name: string, color: string) => {
-    if (!name.trim()) return
+    if (!name.trim() || savingProject) return
+    // Optimistic update: show project IMMEDIATELY before API responds
+    const tempId = 'temp-' + Date.now()
+    setProjects(prev => [...prev, { id: tempId, name, color, _count: { tasks: 0 } }])
+    setExpandedProjects(prev => new Set(prev).add(tempId))
+    setSavingProject(true)
+    showGlobalLoading()
     try {
       const opts = { method: 'POST' as const, headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }, body: JSON.stringify({ name, color }), credentials: 'include' as RequestCredentials }
       const res = await fetch('/api/projects', opts)
-      if (!res.ok) { const err = await res.json().catch(() => ({})); toast('Gagal: ' + (err.error || res.statusText)); return }
+      if (!res.ok) {
+        // Revert optimistic update on failure
+        setProjects(prev => prev.filter(p => p.id !== tempId))
+        setExpandedProjects(prev => { const n = new Set(prev); n.delete(tempId); return n })
+        const err = await res.json().catch(() => ({})); toast('Gagal: ' + (err.error || res.statusText), 'error'); return
+      }
       const data = await res.json()
       toast('Project ditambahkan!', 'success')
-      setExpandedProjects(prev => new Set(prev).add(data.id))
-      // Optimistic update: add new project to local state immediately
-      setProjects(prev => [...prev, { id: data.id, name: data.name, color: data.color, _count: { tasks: 0 } }])
+      // Replace temp ID with real ID
+      setProjects(prev => prev.map(p => p.id === tempId ? { id: data.id, name: data.name, color: data.color, _count: { tasks: 0 } } : p))
+      setExpandedProjects(prev => { const n = new Set(prev); n.delete(tempId); n.add(data.id); return n })
       lastWriteTime.current = Date.now()
-      // Delayed fetch to sync with server (handles Neon pgbouncer read-after-write latency)
       delayedFetch()
-    } catch (e) { console.error(e); toast('Gagal membuat project', 'error') }
+    } catch (e) {
+      console.error(e)
+      setProjects(prev => prev.filter(p => p.id !== tempId))
+      setExpandedProjects(prev => { const n = new Set(prev); n.delete(tempId); return n })
+      toast('Gagal membuat project', 'error')
+    } finally { setSavingProject(false); hideGlobalLoading() }
   }
 
   const editProject = async (id: string, name: string, color: string) => {
@@ -2311,6 +2334,8 @@ export default function MBGPage() {
 
   return (
     <div className="mbg-desktop">
+      {/* ===== GLOBAL LOADING BAR — thin animated bar at top of window ===== */}
+      {globalLoading && <div className="global-loading-bar"><div className="global-loading-bar-fill" /></div>}
       {/* ===== MAIN WINDOW ===== */}
       <div className="win95-window">
         {/* Title Bar */}
@@ -2512,8 +2537,10 @@ export default function MBGPage() {
               </div>
             </div>
             <div className="win95-dialog-footer">
-              <button className="win95-btn primary" onClick={() => { if (formProjectName.trim()) { addProject(formProjectName, formProjectColor); setDialogType(null) } }}>Buat</button>
-              <button className="win95-btn" onClick={() => setDialogType(null)}>Batal</button>
+              <button className="win95-btn primary" disabled={savingProject} onClick={() => { if (formProjectName.trim() && !savingProject) { addProject(formProjectName, formProjectColor); setDialogType(null) } }}>
+                {savingProject ? <span className="btn-loading-text">⏳ Membuat...</span> : 'Buat'}
+              </button>
+              <button className="win95-btn" disabled={savingProject} onClick={() => setDialogType(null)}>Batal</button>
             </div>
           </div>
         </div>
