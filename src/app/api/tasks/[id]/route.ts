@@ -36,6 +36,16 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
       return NextResponse.json({ error: 'Catatan maksimal 10000 karakter' }, { status: 400 })
     }
 
+    // Normalize scheduleConfig: accept both object and string
+    let normalizedConfig: unknown = undefined
+    if (scheduleConfig !== undefined) {
+      if (typeof scheduleConfig === 'string') {
+        try { normalizedConfig = JSON.parse(scheduleConfig) } catch { normalizedConfig = {} }
+      } else {
+        normalizedConfig = scheduleConfig
+      }
+    }
+
     const task = await db.task.update({
       where: { id },
       data: {
@@ -43,7 +53,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
         ...(description !== undefined && { description: description?.trim() || null }),
         ...(link !== undefined && { link: link?.trim() || null }),
         ...(scheduleType !== undefined && { scheduleType }),
-        ...(scheduleConfig !== undefined && { scheduleConfig: JSON.stringify(scheduleConfig) }),
+        ...(normalizedConfig !== undefined && { scheduleConfig: JSON.stringify(normalizedConfig) }),
         ...(projectId !== undefined && { projectId: projectId || null }),
         ...(pinned !== undefined && { pinned }),
         ...(priority !== undefined && { priority }),

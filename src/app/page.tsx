@@ -267,9 +267,27 @@ export default function MBGPage() {
             persistAuth(u)
             return data.userId
           }
+          // res.ok but not authenticated — cookie exists but invalid, force logout
+          setAuthUser(null)
+          setAuthenticated(false)
+          persistAuth(null)
+          return null
         }
-      } catch { /* network error, gunakan localStorage saja */ }
-      // Server unreachable atau gagal, gunakan localStorage
+        // 401 = blocked or cookie cleared — server explicitly rejected, must logout
+        if (res.status === 401) {
+          try {
+            const data = await res.json()
+            if (data.blocked) {
+              toast('Akun Anda telah diblokir oleh admin.', 'error')
+            }
+          } catch { /* ignore parse error */ }
+          setAuthUser(null)
+          setAuthenticated(false)
+          persistAuth(null)
+          return null
+        }
+      } catch { /* network error only — allow localStorage fallback */ }
+      // Jaringan error saja yang boleh fallback ke localStorage
       return authUser.id
     }
     // Tidak ada data di localStorage, cek server (mungkin cookie masih ada)

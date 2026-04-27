@@ -104,6 +104,12 @@ export async function POST(req: NextRequest) {
       select: { position: true }
     })
 
+    // Normalize scheduleConfig: accept both object and string, always store as JSON string
+    let config = scheduleConfig || {}
+    if (typeof config === 'string') {
+      try { config = JSON.parse(config) } catch { config = {} }
+    }
+
     const task = await db.task.create({
       data: {
         userId,
@@ -111,7 +117,7 @@ export async function POST(req: NextRequest) {
         description: description?.trim() || null,
         link: link?.trim() || null,
         scheduleType: scheduleType || 'sekali',
-        scheduleConfig: JSON.stringify(scheduleConfig || {}),
+        scheduleConfig: JSON.stringify(config),
         projectId: projectId || null,
         pinned: pinned || false,
         priority: priority || 'medium',

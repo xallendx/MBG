@@ -48,7 +48,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         name: name.trim(),
         link: link?.trim() || null,
         scheduleType: scheduleType || 'sekali',
-        scheduleConfig: typeof scheduleConfig === 'string' ? scheduleConfig : (scheduleConfig ? JSON.stringify(scheduleConfig) : '{}'),
+        scheduleConfig: typeof scheduleConfig === 'string' ? scheduleConfig : JSON.stringify(scheduleConfig || {}),
         position: (maxPos?.position ?? -1) + 1,
       },
     })

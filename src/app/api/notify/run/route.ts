@@ -59,7 +59,7 @@ export async function POST() {
       const displayName = escHtml(user.displayName || user.username)
 
       // ---- Notif 2 menit sebelum siap ----
-      if (msUntilReady > 0 && msUntilReady <= 130000 && !task.notifiedWarnAt) {
+      if (msUntilReady > 0 && msUntilReady <= 120000 && !task.notifiedWarnAt) {
         const minutesLeft = Math.ceil(msUntilReady / 60000)
         const secondsLeft = Math.ceil(msUntilReady / 1000)
         let timeText = ''

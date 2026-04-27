@@ -55,7 +55,7 @@ export async function POST(req: NextRequest) {
         description: description?.trim() || null,
         link: link?.trim() || null,
         scheduleType: scheduleType || 'sekali',
-        scheduleConfig: JSON.stringify(scheduleConfig || {}),
+        scheduleConfig: typeof scheduleConfig === 'string' ? scheduleConfig : JSON.stringify(scheduleConfig || {}),
         priority: priority || 'medium',
       }
     })
