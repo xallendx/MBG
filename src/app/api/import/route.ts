@@ -106,7 +106,8 @@ export async function POST(req: NextRequest) {
     // Import settings — WHITELISTED keys only (security fix)
     if (data.settings && typeof data.settings === 'object') {
       const user = await db.user.findUnique({ where: { id: userId } })
-      const current = user?.settings ? JSON.parse(user.settings) : {}
+      let current: Record<string, unknown> = {}
+      try { current = user?.settings ? JSON.parse(user.settings) : {} } catch { current = {} }
       const sanitized: Record<string, unknown> = {}
       for (const key of ALLOWED_IMPORT_SETTINGS) {
         if (key in data.settings) sanitized[key] = data.settings[key]

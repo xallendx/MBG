@@ -46,9 +46,11 @@ export async function DELETE(_: Request, { params }: { params: Promise<{ id: str
     const existing = await db.project.findFirst({ where: { id, userId } })
     if (!existing) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
-    // Delete all tasks belonging to this project, then delete the project
-    await db.task.deleteMany({ where: { projectId: id } })
-    await db.project.delete({ where: { id } })
+    // Delete all tasks + project atomically in a transaction
+    await db.$transaction([
+      db.task.deleteMany({ where: { projectId: id } }),
+      db.project.delete({ where: { id } })
+    ])
 
     return NextResponse.json({ success: true })
   } catch {

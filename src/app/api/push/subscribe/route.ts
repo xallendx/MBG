@@ -15,19 +15,29 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Invalid subscription data' }, { status: 400 })
     }
 
-    // Upsert: replace existing subscription for this endpoint
-    await db.pushSubscription.upsert({
-      where: { endpoint },
-      create: {
-        userId: user.id,
-        endpoint,
-        keys: JSON.stringify(keys),
-      },
-      update: {
-        userId: user.id,
-        keys: JSON.stringify(keys),
-      },
-    })
+    // Security: prevent subscription hijacking — check ownership before upsert
+    const existing = await db.pushSubscription.findUnique({ where: { endpoint } })
+    if (existing && existing.userId !== user.id) {
+      // Another user owns this endpoint — reject
+      return NextResponse.json({ error: 'Subscription belongs to another user' }, { status: 403 })
+    }
+
+    if (existing) {
+      // Update existing subscription for this user
+      await db.pushSubscription.update({
+        where: { endpoint },
+        data: { keys: JSON.stringify(keys) }
+      })
+    } else {
+      // Create new subscription
+      await db.pushSubscription.create({
+        data: {
+          userId: user.id,
+          endpoint,
+          keys: JSON.stringify(keys),
+        }
+      })
+    }
 
     return NextResponse.json({ success: true })
   } catch {

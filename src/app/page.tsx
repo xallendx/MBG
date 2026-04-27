@@ -355,7 +355,10 @@ export default function MBGPage() {
   const jsonOpts = (method: string, body: unknown, extra: Record<string, unknown> = {}) => ({
     method, headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }, body: JSON.stringify(body), credentials: 'include' as RequestCredentials, ...extra
   })
-  const api = (url: string, opts?: RequestInit) => fetch(url, { credentials: 'include' as RequestCredentials, headers: { ...getAuthHeaders(), ...(opts?.headers as Record<string, string> || {}) }, ...opts })
+  const api = (url: string, opts?: RequestInit) => {
+    const { headers: customHeaders, ...rest } = opts || {}
+    return fetch(url, { credentials: 'include' as RequestCredentials, headers: { ...getAuthHeaders(), ...customHeaders }, ...rest })
+  }
 
   // Helper: ensure user is identified — sync localStorage dengan server via /api/identify
   const ensureIdentified = useCallback(async (signal?: AbortSignal) => {
@@ -648,7 +651,7 @@ export default function MBGPage() {
       setTasks(prev => prev.map(t => {
         if (t.status !== 'cooldown' || !t.nextReadyAt) return t
         const ms = Math.max(0, new Date(t.nextReadyAt).getTime() - Date.now())
-        if (ms <= 0) return { ...t, status: 'siap' as const, cooldownRemaining: '', cooldownMs: 0, nextReadyAt: null }
+        if (ms <= 0) return { ...t, cooldownRemaining: '', cooldownMs: 0 }
         const h = Math.floor(ms / 3600000), m = Math.floor((ms % 3600000) / 60000), s = Math.floor((ms % 60000) / 1000)
         let text = ''
         if (h >= 1) {
@@ -663,6 +666,14 @@ export default function MBGPage() {
     }, 5000) // Fix #2: 5 second interval
     return () => clearInterval(tick)
   }, [])
+
+  /* ===== Fix H1: Keep detailRef in sync with tasks when detail dialog is open ===== */
+  useEffect(() => {
+    if (dialogType === 'detail' && selectedTaskId) {
+      const fresh = tasks.find(t => t.id === selectedTaskId)
+      if (fresh) detailRef.current = fresh
+    }
+  }, [tasks, dialogType, selectedTaskId])
 
   /* ===== Time formatting helpers (12h/24h) ===== */
   const timeOpts: Intl.DateTimeFormatOptions = formTimeFormat === '12'
@@ -722,7 +733,8 @@ export default function MBGPage() {
     if (completingIds.has(id)) return
     setCompletingIds(p => new Set(p).add(id))
     try {
-      await api(`/api/tasks/${id}/complete`, { method: 'POST' })
+      const res = await api(`/api/tasks/${id}/complete`, { method: 'POST' })
+      if (!res.ok) { toast('Gagal menyelesaikan task', 'error'); return }
       toast('Task selesai!', 'success')
       // Optimistic update: update task status locally
       setTasks(prev => prev.map(t => t.id === id ? { ...t, status: 'selesai' as const, cooldownRemaining: '', cooldownMs: 0 } : t))
@@ -734,7 +746,8 @@ export default function MBGPage() {
 
   const resetTask = async (id: string) => {
     try {
-      await api(`/api/tasks/${id}/reset`, { method: 'POST' })
+      const res = await api(`/api/tasks/${id}/reset`, { method: 'POST' })
+      if (!res.ok) { toast('Gagal mereset task', 'error'); return }
       toast('Task di-reset!', 'success')
       // Optimistic update: update task status locally
       setTasks(prev => prev.map(t => t.id === id ? { ...t, status: 'siap' as const, nextReadyAt: null, cooldownRemaining: '', cooldownMs: 0 } : t))
@@ -790,12 +803,13 @@ export default function MBGPage() {
   }
 
   const saveNotes = async (id: string, notes: string) => {
-    try { await api(`/api/tasks/${id}`, jsonOpts('PUT', { notes })) } catch { /* */ }
+    try { const res = await api(`/api/tasks/${id}`, jsonOpts('PUT', { notes })); if (!res.ok) { toast('Gagal menyimpan catatan', 'error'); return } } catch { toast('Gagal menyimpan catatan', 'error') }
   }
 
   const togglePin = async (task: Task) => {
     try {
-      await api(`/api/tasks/${task.id}`, jsonOpts('PUT', { pinned: !task.pinned }))
+      const res = await api(`/api/tasks/${task.id}`, jsonOpts('PUT', { pinned: !task.pinned }))
+      if (!res.ok) { toast('Gagal pin/unpin task', 'error'); return }
       setTasks(prev => prev.map(t => t.id === task.id ? { ...t, pinned: !task.pinned } : t))
       delayedFetch()
     } catch { toast('Gagal pin/unpin task', 'error') }
@@ -806,11 +820,12 @@ export default function MBGPage() {
     try {
       let config = {}
       try { config = JSON.parse(t.scheduleConfig) } catch { /* use default */ }
-      await api('/api/tasks', jsonOpts('POST', {
+      const res = await api('/api/tasks', jsonOpts('POST', {
         name: t.name + ' (copy)', description: t.description, link: t.link,
         scheduleType: t.scheduleType, scheduleConfig: config,
         projectId: t.project?.id, priority: t.priority || 'medium'
       }))
+      if (!res.ok) { toast('Gagal menduplikat task', 'error'); return }
       toast('Task diduplikat!', 'success')
       delayedFetch()
     } catch { toast('Gagal menduplikat task', 'error') }
@@ -820,7 +835,8 @@ export default function MBGPage() {
   const confirmMoveTask = async () => {
     if (!moveDialogTask || !moveTargetProjectId) return
     try {
-      await api(`/api/tasks/${moveDialogTask.id}`, jsonOpts('PUT', { projectId: moveTargetProjectId }))
+      const res = await api(`/api/tasks/${moveDialogTask.id}`, jsonOpts('PUT', { projectId: moveTargetProjectId }))
+      if (!res.ok) { toast('Gagal memindahkan task', 'error'); return }
       toast('Task dipindahkan!', 'success')
       // Optimistic update: update task's project locally
       const targetProj = projects.find(p => p.id === moveTargetProjectId)
@@ -846,9 +862,15 @@ export default function MBGPage() {
           const fail = results.length - ok
           if (fail === 0) toast(`${ok} task selesai!`)
           else toast(`${ok} berhasil, ${fail} gagal`)
-          // Optimistic update: mark all ready tasks as completed locally
-          const completedIds = new Set(readyTasks.map(t => t.id))
-          setTasks(prev => prev.map(t => completedIds.has(t.id) ? { ...t, status: 'selesai' as const, cooldownRemaining: '', cooldownMs: 0 } : t))
+          // Only mark tasks whose API calls actually succeeded
+          const okIds = new Set<string>()
+          results.forEach((r, i) => {
+            if (r.status === 'fulfilled') {
+              const val = r.value
+              if (val && val.ok) okIds.add(readyTasks[i].id)
+            }
+          })
+          setTasks(prev => prev.map(t => okIds.has(t.id) ? { ...t, status: 'selesai' as const, cooldownRemaining: '', cooldownMs: 0 } : t))
         } catch { toast('Gagal batch complete', 'error') }
         setBatchCompleting(null)
         delayedFetch()
@@ -896,7 +918,8 @@ export default function MBGPage() {
 
   const editProject = async (id: string, name: string, color: string) => {
     try {
-      await api(`/api/projects/${id}`, jsonOpts('PUT', { name, color }))
+      const res = await api(`/api/projects/${id}`, jsonOpts('PUT', { name, color }))
+      if (!res.ok) { toast('Gagal memperbarui project', 'error'); return }
       toast('Project diperbarui!', 'success')
       // Optimistic update: update project in local state immediately
       setProjects(prev => prev.map(p => p.id === id ? { ...p, name, color } : p))
@@ -1319,7 +1342,15 @@ export default function MBGPage() {
 
   /* ===== Settings ===== */
   const saveSettings = async () => {
-    try { await api('/api/settings', jsonOpts('PUT', { timezone: formTimezone, timeFormat: formTimeFormat, autoExpandSiap: formAutoExpandSiap, autoCompleteLink: formAutoCompleteLink, telegramNotifEnabled: formTelegramNotif, browserNotifEnabled: formBrowserNotif, pomodoroDuration: formPomodoroDuration, audioAlertEnabled: formAudioAlertEnabled })); toast('Disimpan!', 'success'); setDialogType(null); fetchData() }
+    try {
+      const res = await api('/api/settings', jsonOpts('PUT', { timezone: formTimezone, timeFormat: formTimeFormat, autoExpandSiap: formAutoExpandSiap, autoCompleteLink: formAutoCompleteLink, telegramNotifEnabled: formTelegramNotif, browserNotifEnabled: formBrowserNotif, pomodoroDuration: formPomodoroDuration, audioAlertEnabled: formAudioAlertEnabled }))
+      if (!res.ok) { toast('Gagal', 'error'); return }
+      // If user disabled browser notif, unregister push subscription
+      if (formBrowserNotif !== settings.browserNotifEnabled && !formBrowserNotif) {
+        unregisterPushSubscription()
+      }
+      toast('Disimpan!', 'success'); setDialogType(null); fetchData()
+    }
     catch { toast('Gagal', 'error') }
   }
 
@@ -1610,7 +1641,7 @@ export default function MBGPage() {
     window.addEventListener('keydown', h); return () => window.removeEventListener('keydown', h)
   }, [expandedProjects, projects, viewMode, dialogType, notesPanelOpen])
 
-  const closeAll = () => { setDialogType(null); setConfirmData(null); setContextMenu(null); setProjectContextMenu(null); setOpenMenu(null); setMoveDialogTask(null); cancelWorking(); setProfileMenuOpen(false); setEditingNoteId(null); setNoteFormContent(''); setBatchCompleting(null); setTemplateDialogOpen(false) }
+  const closeAll = () => { setDialogType(null); setConfirmData(null); setContextMenu(null); setProjectContextMenu(null); setOpenMenu(null); setMoveDialogTask(null); cancelWorking(); setProfileMenuOpen(false); setEditingNoteId(null); setNoteFormContent(''); setBatchCompleting(null); setTemplateDialogOpen(false); setImportCode(''); setImportPreview(null); setShareCode(''); setShareTaskCount(0); setTelegramCode(''); setMoveTargetProjectId(null) }
   const toggleCollapse = (s: string) => setCollapsedSections(p => ({ ...p, [s]: !p[s] }))
 
   /* ===== Active tasks: hide completed 'sekali' from main view ===== */
@@ -3306,10 +3337,10 @@ export default function MBGPage() {
       )}
 
       {/* ===== TOAST ===== */}
-      <div className="toast-container">{toasts.map((t, i) => {
+      <div className="toast-container">{toasts.map((t) => {
         const icon = t.type === 'success' ? '✅' : t.type === 'error' ? '❌' : '💡'
         const cls = t.type === 'success' ? 'win95-toast-success' : t.type === 'error' ? 'win95-toast-error' : 'win95-toast-info'
-        return <div key={i} className={`win95-toast ${cls}`}>{icon} {t.msg}</div>
+        return <div key={t.id} className={`win95-toast ${cls}`}>{icon} {t.msg}</div>
       })}</div>
     </div>
   )

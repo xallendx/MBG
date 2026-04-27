@@ -6,12 +6,10 @@ import crypto from 'crypto'
 // HMAC cookie signing — prevents tampering with mbg_user_id cookie
 const COOKIE_SECRET = process.env.COOKIE_SECRET
 if (!COOKIE_SECRET && process.env.NODE_ENV === 'production') {
-  console.warn('[SECURITY] COOKIE_SECRET env var is not set. Using fallback. Set it for proper security.')
+  throw new Error('[SECURITY] COOKIE_SECRET environment variable is required in production. Refusing to start.')
 }
 
-// In production, use a derived fallback from the app name to prevent completely empty secret
-// This is NOT as secure as a proper random secret but prevents total auth bypass
-const _SECRET = COOKIE_SECRET || (process.env.NODE_ENV === 'production' ? 'mbg-production-fallback-secret-v1' : 'dev-only-do-not-use-in-production')
+const _SECRET = COOKIE_SECRET || 'dev-only-do-not-use-in-production'
 
 function signCookie(userId: string): string {
   const sig = crypto.createHmac('sha256', _SECRET).update(userId).digest('hex').slice(0, 32)
@@ -24,8 +22,16 @@ function verifyCookie(value: string): string | null {
   const userId = value.slice(0, dotIdx)
   const sig = value.slice(dotIdx + 1)
   const expected = crypto.createHmac('sha256', _SECRET).update(userId).digest('hex').slice(0, 32)
-  if (sig !== expected) return null
-  return userId
+  // Use timing-safe comparison to prevent timing attacks
+  try {
+    const sigBuf = Buffer.from(sig, 'utf8')
+    const expectedBuf = Buffer.from(expected, 'utf8')
+    if (sigBuf.length !== expectedBuf.length) return null
+    const isValid = crypto.timingSafeEqual(sigBuf, expectedBuf)
+    return isValid ? userId : null
+  } catch {
+    return null
+  }
 }
 
 // Helper: ambil userId dari cookie saja (cookie-only auth, no header fallback)

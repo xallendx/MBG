@@ -15,17 +15,18 @@ export async function POST(
     const task = await db.task.findFirst({ where: { id, userId } })
     if (!task) return NextResponse.json({ error: 'Task not found' }, { status: 404 })
 
-    // Find and delete the most recent log (using correct TaskLog model)
-    const latestLog = await db.taskLog.findFirst({
+    // Use deleteMany with orderBy + take to atomically delete the latest log
+    // This avoids race conditions where two concurrent requests find the same log
+    const deleted = await db.taskLog.deleteMany({
       where: { taskId: id },
       orderBy: { completedAt: 'desc' },
+      take: 1
     })
 
-    if (!latestLog) {
+    if (deleted.count === 0) {
       return NextResponse.json({ error: 'No completion to undo' }, { status: 400 })
     }
 
-    await db.taskLog.delete({ where: { id: latestLog.id } })
     return NextResponse.json({ success: true })
   } catch {
     return NextResponse.json({ error: 'Failed to undo completion' }, { status: 500 })

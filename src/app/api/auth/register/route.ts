@@ -55,6 +55,9 @@ export async function POST(req: Request) {
     if (password.length < 6) {
       return NextResponse.json({ error: 'Password minimal 6 karakter' }, { status: 400 })
     }
+    if (password.length > 128) {
+      return NextResponse.json({ error: 'Password terlalu panjang' }, { status: 400 })
+    }
     if (displayName !== undefined && displayName !== null && displayName.length > 100) {
       return NextResponse.json({ error: 'Display name maksimal 100 karakter' }, { status: 400 })
     }

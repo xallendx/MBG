@@ -1,7 +1,7 @@
 // MBG Airdrop Task Manager — Service Worker
 // Handles push notifications even when the app is closed or in background
 
-const CACHE_NAME = 'mbg-v2'
+const CACHE_NAME = 'mbg-v3'
 
 // Install — cache essential static assets only (NO API routes)
 self.addEventListener('install', (event) => {

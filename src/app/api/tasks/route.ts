@@ -16,7 +16,8 @@ export async function GET() {
       where: { userId },
       include: {
         project: true,
-        logs: { orderBy: { completedAt: 'desc' } }
+        logs: { orderBy: { completedAt: 'desc' }, take: 1 },
+        _count: { select: { logs: true } }
       },
       orderBy: { position: 'asc' }
     })
@@ -43,7 +44,7 @@ export async function GET() {
         lastCompletedAt: lastCompleted?.toISOString() || null,
         cooldownRemaining,
         cooldownMs,
-        logCount: t.logs.length,
+        logCount: t._count.logs,
         project: t.project ? { id: t.project.id, name: t.project.name, color: t.project.color } : null
       }
     })

@@ -24,16 +24,19 @@ export async function GET() {
       }
     })
 
-    // Tambahkan info invite code yang dipakai
-    const enriched = await Promise.all(users.map(async (u) => {
-      const invite = await db.inviteCode.findFirst({
-        where: { usedBy: u.id },
-        select: { code: true }
-      })
-      return {
-        ...u,
-        inviteCode: invite?.code || null
-      }
+    // Batch fetch invite codes (fix N+1)
+    const userIds = users.map(u => u.id)
+    const inviteCodes = userIds.length > 0
+      ? await db.inviteCode.findMany({
+          where: { usedBy: { in: userIds } },
+          select: { code: true, usedBy: true }
+        })
+      : []
+    const codeMap = Object.fromEntries(inviteCodes.map(c => [c.usedBy, c.code]))
+
+    const enriched = users.map(u => ({
+      ...u,
+      inviteCode: codeMap[u.id] || null
     }))
 
     return NextResponse.json(enriched)

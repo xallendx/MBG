@@ -146,7 +146,33 @@ export async function POST() {
       }
 
       // ---- Notif saat task sudah siap ----
+      // Also send warn if warn was missed (task jumped from >2min to ready between polls)
       if (msUntilReady <= 0 && !task.notifiedReadyAt) {
+        // If warn was never sent and task is ready, send warn first then ready
+        if (!task.notifiedWarnAt) {
+          if (telegramEnabled) {
+            try {
+              await sendTelegramMessage(
+                settings.telegramChatId as string | number,
+                `⏰ <b>Hampir Siap!</b>\n\n` +
+                `📋 ${taskLabel}\n` +
+                `⏱ Siap sekarang!\n` +
+                `👤 ${displayName}`,
+                'HTML'
+              )
+            } catch { /* non-critical */ }
+          }
+          if (pushEnabled) {
+            try {
+              await sendWebPush(user.id, `⏰ ${task.name}`, 'Siap sekarang!', `warn-${task.id}`)
+            } catch { /* non-critical */ }
+          }
+          await db.task.update({
+            where: { id: task.id },
+            data: { notifiedWarnAt: new Date() }
+          })
+        }
+
         // Telegram notification
         if (telegramEnabled) {
           try {

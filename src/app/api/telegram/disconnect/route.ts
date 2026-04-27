@@ -21,7 +21,10 @@ export async function POST() {
 
     await db.user.update({
       where: { id: userId },
-      data: { settings: JSON.stringify(settings) },
+      data: {
+        telegramId: null, // Also clear the dedicated column
+        settings: JSON.stringify(settings)
+      },
     })
 
     return NextResponse.json({ success: true })

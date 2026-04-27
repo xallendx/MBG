@@ -41,6 +41,9 @@ export async function POST(req: Request) {
     if (!username || !password) {
       return NextResponse.json({ error: 'Username dan password wajib diisi' }, { status: 400 })
     }
+    if (password.length > 128) {
+      return NextResponse.json({ error: 'Password terlalu panjang' }, { status: 400 })
+    }
 
     // Rate limiting by username (prevent brute force)
     if (isLoginRateLimited(username)) {
