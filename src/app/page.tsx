@@ -581,13 +581,25 @@ export default function MBGPage() {
   const complete = async (id: string) => {
     if (completingIds.has(id)) return
     setCompletingIds(p => new Set(p).add(id))
-    try { await api(`/api/tasks/${id}/complete`, { method: 'POST' }); toast('Task selesai!', 'success'); fetchData() }
+    try {
+      await api(`/api/tasks/${id}/complete`, { method: 'POST' })
+      toast('Task selesai!', 'success')
+      // Optimistic update: update task status locally
+      setTasks(prev => prev.map(t => t.id === id ? { ...t, status: 'selesai' as const, cooldownRemaining: '', cooldownMs: 0 } : t))
+      setTimeout(() => fetchData(false, true), 800)
+    }
     catch { toast('Gagal menyelesaikan task', 'error') }
     finally { setCompletingIds(p => { const n = new Set(p); n.delete(id); return n }) }
   }
 
   const resetTask = async (id: string) => {
-    try { await api(`/api/tasks/${id}/reset`, { method: 'POST' }); toast('Task di-reset!', 'success'); fetchData() }
+    try {
+      await api(`/api/tasks/${id}/reset`, { method: 'POST' })
+      toast('Task di-reset!', 'success')
+      // Optimistic update: update task status locally
+      setTasks(prev => prev.map(t => t.id === id ? { ...t, status: 'siap' as const, nextReadyAt: null, cooldownRemaining: '', cooldownMs: 0 } : t))
+      setTimeout(() => fetchData(false, true), 800)
+    }
     catch { toast('Gagal mereset task', 'error') }
   }
 
@@ -601,7 +613,7 @@ export default function MBGPage() {
   const delTask = (id: string) => {
     setConfirmData({
       title: 'Hapus Task', message: 'Yakin hapus task ini? Log juga ikut terhapus.',
-      onConfirm: async () => { try { await api(`/api/tasks/${id}`, { method: 'DELETE' }); toast('Dihapus!', 'success'); fetchData() } catch { toast('Gagal menghapus task', 'error') }; setConfirmData(null) }
+      onConfirm: async () => { try { await api(`/api/tasks/${id}`, { method: 'DELETE' }); toast('Dihapus!', 'success'); setTasks(prev => prev.filter(t => t.id !== id)); setTimeout(() => fetchData(false, true), 800) } catch { toast('Gagal menghapus task', 'error') }; setConfirmData(null) }
     })
   }
 
@@ -630,7 +642,9 @@ export default function MBGPage() {
         if (!res.ok) { const err = await res.json().catch(() => ({})); toast('Gagal: ' + (err.error || res.statusText), 'error'); return }
         toast('Task diperbarui!', 'success')
       } else return
-      setDialogType(null); setSelectedTaskId(null); fetchData(false, true)
+      setDialogType(null); setSelectedTaskId(null)
+      // Delayed fetch for server sync (handles Neon pgbouncer read-after-write latency)
+      setTimeout(() => fetchData(false, true), 800)
     } catch (e) { console.error(e); toast('Gagal menyimpan task', 'error') }
     finally { setSavingTask(false) }
   }
@@ -640,7 +654,11 @@ export default function MBGPage() {
   }
 
   const togglePin = async (task: Task) => {
-    try { await api(`/api/tasks/${task.id}`, jsonOpts('PUT', { pinned: !task.pinned })); fetchData() } catch { toast('Gagal pin/unpin task', 'error') }
+    try {
+      await api(`/api/tasks/${task.id}`, jsonOpts('PUT', { pinned: !task.pinned }))
+      setTasks(prev => prev.map(t => t.id === task.id ? { ...t, pinned: !task.pinned } : t))
+      setTimeout(() => fetchData(false, true), 800)
+    } catch { toast('Gagal pin/unpin task', 'error') }
   }
 
   /* ===== Fix #8: Duplicate Task ===== */
@@ -654,7 +672,7 @@ export default function MBGPage() {
         projectId: t.project?.id, priority: t.priority || 'medium'
       }))
       toast('Task diduplikat!', 'success')
-      fetchData()
+      setTimeout(() => fetchData(false, true), 800)
     } catch { toast('Gagal menduplikat task', 'error') }
   }
 
@@ -664,8 +682,11 @@ export default function MBGPage() {
     try {
       await api(`/api/tasks/${moveDialogTask.id}`, jsonOpts('PUT', { projectId: moveTargetProjectId }))
       toast('Task dipindahkan!', 'success')
+      // Optimistic update: update task's project locally
+      const targetProj = projects.find(p => p.id === moveTargetProjectId)
+      setTasks(prev => prev.map(t => t.id === moveDialogTask.id ? { ...t, project: targetProj ? { id: targetProj.id, name: targetProj.name, color: targetProj.color } : null } : t))
       setMoveDialogTask(null); setMoveTargetProjectId(null)
-      fetchData()
+      setTimeout(() => fetchData(false, true), 800)
     } catch { toast('Gagal memindahkan task', 'error') }
   }
 
@@ -685,9 +706,12 @@ export default function MBGPage() {
           const fail = results.length - ok
           if (fail === 0) toast(`${ok} task selesai!`)
           else toast(`${ok} berhasil, ${fail} gagal`)
+          // Optimistic update: mark all ready tasks as completed locally
+          const completedIds = new Set(readyTasks.map(t => t.id))
+          setTasks(prev => prev.map(t => completedIds.has(t.id) ? { ...t, status: 'selesai' as const, cooldownRemaining: '', cooldownMs: 0 } : t))
         } catch { toast('Gagal batch complete', 'error') }
         setBatchCompleting(null)
-        fetchData()
+        setTimeout(() => fetchData(false, true), 800)
         setConfirmData(null)
       }
     })
@@ -723,14 +747,21 @@ export default function MBGPage() {
       const data = await res.json()
       toast('Project ditambahkan!', 'success')
       setExpandedProjects(prev => new Set(prev).add(data.id))
-      fetchData(false, true)
+      // Optimistic update: add new project to local state immediately
+      setProjects(prev => [...prev, { id: data.id, name: data.name, color: data.color, _count: { tasks: 0 } }])
+      // Delayed fetch to sync with server (handles Neon pgbouncer read-after-write latency)
+      setTimeout(() => fetchData(false, true), 800)
     } catch (e) { console.error(e); toast('Gagal membuat project', 'error') }
   }
 
   const editProject = async (id: string, name: string, color: string) => {
     try {
       await api(`/api/projects/${id}`, jsonOpts('PUT', { name, color }))
-      toast('Project diperbarui!', 'success'); setDialogType(null); fetchData()
+      toast('Project diperbarui!', 'success')
+      // Optimistic update: update project in local state immediately
+      setProjects(prev => prev.map(p => p.id === id ? { ...p, name, color } : p))
+      setDialogType(null)
+      setTimeout(() => fetchData(false, true), 800)
     } catch { toast('Gagal memperbarui project', 'error') }
   }
 
@@ -741,6 +772,9 @@ export default function MBGPage() {
         try {
           await api(`/api/projects/${p.id}`, { method: 'DELETE' })
           toast('Project dihapus!', 'success')
+          // Optimistic update: remove project from local state immediately
+          setProjects(prev => prev.filter(proj => proj.id !== p.id))
+          setTasks(prev => prev.filter(t => t.project?.id !== p.id))
           setExpandedProjects(prev => { const n = new Set(prev); n.delete(p.id); return n })
           // BUG-FIX: clear selectedTaskId jika task-nya termasuk yang dihapus
           const deletedTaskIds = new Set(tasks.filter(t => t.project?.id === p.id).map(t => t.id))
@@ -755,7 +789,7 @@ export default function MBGPage() {
               setDialogType(null)
             }
           }
-          fetchData()
+          setTimeout(() => fetchData(false, true), 800)
         } catch { toast('Gagal', 'error') }
         setConfirmData(null)
       }
