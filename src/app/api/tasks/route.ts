@@ -159,6 +159,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(task, { status: 201 })
   } catch (e) {
     console.error('[POST /api/tasks]', e)
-    return NextResponse.json({ error: 'Request failed', detail: e instanceof Error ? e.message : String(e) }, { status: 500 })
+    return NextResponse.json({ error: 'Request failed' }, { status: 500 })
   }
 }

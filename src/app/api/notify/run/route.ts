@@ -109,6 +109,7 @@ export async function POST() {
       const notifyBeforeMs = ((settings.notifyBeforeCooldownMin as number) || 5) * 60 * 1000
 
       // ---- Notif X menit sebelum siap (based on user setting) ----
+      // Atomic: use updateMany with where notifiedWarnAt=null to prevent duplicate sends
       if (msUntilReady > 0 && msUntilReady <= notifyBeforeMs && !task.notifiedWarnAt) {
         const minutesLeft = Math.ceil(msUntilReady / 60000)
         const secondsLeft = Math.ceil(msUntilReady / 1000)
@@ -116,36 +117,41 @@ export async function POST() {
         if (minutesLeft >= 1) timeText = `${minutesLeft} menit`
         else timeText = `${secondsLeft} detik`
 
-        // Telegram notification
-        if (telegramEnabled) {
-          try {
-            await sendTelegramMessage(
-              settings.telegramChatId as string | number,
-              `⏰ <b>Hampir Siap!</b>\n\n` +
-              `📋 ${taskLabel}\n` +
-              `⏱ Siap dalam: ${timeText}\n` +
-              `👤 ${displayName}`,
-              'HTML'
-            )
-          } catch {
-            errorCount++
-          }
-        }
-
-        // Web Push notification
-        if (pushEnabled) {
-          try {
-            await sendWebPush(user.id, `⏰ ${task.name}`, `Siap dalam ${timeText}`, `warn-${task.id}`)
-          } catch {
-            errorCount++
-          }
-        }
-
-        await db.task.update({
-          where: { id: task.id },
+        // Atomic claim: only the first concurrent request wins
+        const claimed = await db.task.updateMany({
+          where: { id: task.id, notifiedWarnAt: null },
           data: { notifiedWarnAt: new Date() }
         })
-        sentCount++
+
+        if (claimed.count > 0) {
+          // We won the race — send notifications
+          // Telegram notification
+          if (telegramEnabled) {
+            try {
+              await sendTelegramMessage(
+                settings.telegramChatId as string | number,
+                `⏰ <b>Hampir Siap!</b>\n\n` +
+                `📋 ${taskLabel}\n` +
+                `⏱ Siap dalam: ${timeText}\n` +
+                `👤 ${displayName}`,
+                'HTML'
+              )
+            } catch {
+              errorCount++
+            }
+          }
+
+          // Web Push notification
+          if (pushEnabled) {
+            try {
+              await sendWebPush(user.id, `⏰ ${task.name}`, `Siap dalam ${timeText}`, `warn-${task.id}`)
+            } catch {
+              errorCount++
+            }
+          }
+
+          sentCount++
+        }
       }
 
       // ---- Notif saat task sudah siap ----
@@ -153,58 +159,65 @@ export async function POST() {
       if (msUntilReady <= 0 && !task.notifiedReadyAt) {
         // If warn was never sent and task is ready, send warn first then ready
         if (!task.notifiedWarnAt) {
+          const claimedWarn = await db.task.updateMany({
+            where: { id: task.id, notifiedWarnAt: null },
+            data: { notifiedWarnAt: new Date() }
+          })
+          if (claimedWarn.count > 0) {
+            if (telegramEnabled) {
+              try {
+                await sendTelegramMessage(
+                  settings.telegramChatId as string | number,
+                  `⏰ <b>Hampir Siap!</b>\n\n` +
+                  `📋 ${taskLabel}\n` +
+                  `⏱ Siap sekarang!\n` +
+                  `👤 ${displayName}`,
+                  'HTML'
+                )
+              } catch { /* non-critical */ }
+            }
+            if (pushEnabled) {
+              try {
+                await sendWebPush(user.id, `⏰ ${task.name}`, 'Siap sekarang!', `warn-${task.id}`)
+              } catch { /* non-critical */ }
+            }
+          }
+        }
+
+        // Atomic claim for ready notification
+        const claimedReady = await db.task.updateMany({
+          where: { id: task.id, notifiedReadyAt: null },
+          data: { notifiedReadyAt: new Date() }
+        })
+
+        if (claimedReady.count > 0) {
+          // We won the race — send ready notifications
+          // Telegram notification
           if (telegramEnabled) {
             try {
               await sendTelegramMessage(
                 settings.telegramChatId as string | number,
-                `⏰ <b>Hampir Siap!</b>\n\n` +
+                `✅ <b>Task Siap Dikerjakan!</b>\n\n` +
                 `📋 ${taskLabel}\n` +
-                `⏱ Siap sekarang!\n` +
                 `👤 ${displayName}`,
                 'HTML'
               )
-            } catch { /* non-critical */ }
+            } catch {
+              errorCount++
+            }
           }
+
+          // Web Push notification
           if (pushEnabled) {
             try {
-              await sendWebPush(user.id, `⏰ ${task.name}`, 'Siap sekarang!', `warn-${task.id}`)
-            } catch { /* non-critical */ }
+              await sendWebPush(user.id, `✅ ${task.name}`, 'Task siap dikerjakan!', `ready-${task.id}`)
+            } catch {
+              errorCount++
+            }
           }
-          await db.task.update({
-            where: { id: task.id },
-            data: { notifiedWarnAt: new Date() }
-          })
-        }
 
-        // Telegram notification
-        if (telegramEnabled) {
-          try {
-            await sendTelegramMessage(
-              settings.telegramChatId as string | number,
-              `✅ <b>Task Siap Dikerjakan!</b>\n\n` +
-              `📋 ${taskLabel}\n` +
-              `👤 ${displayName}`,
-              'HTML'
-            )
-          } catch {
-            errorCount++
-          }
+          sentCount++
         }
-
-        // Web Push notification
-        if (pushEnabled) {
-          try {
-            await sendWebPush(user.id, `✅ ${task.name}`, 'Task siap dikerjakan!', `ready-${task.id}`)
-          } catch {
-            errorCount++
-          }
-        }
-
-        await db.task.update({
-          where: { id: task.id },
-          data: { notifiedReadyAt: new Date() }
-        })
-        sentCount++
       }
     }
 

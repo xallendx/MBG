@@ -43,7 +43,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
         ...(description !== undefined && { description: description?.trim() || null }),
         ...(link !== undefined && { link: link?.trim() || null }),
         ...(scheduleType !== undefined && { scheduleType }),
-        ...(scheduleConfig !== undefined && { scheduleConfig: JSON.stringify(scheduleConfig || {}) }),
+        ...(scheduleConfig !== undefined && { scheduleConfig: typeof scheduleConfig === 'string' ? scheduleConfig : JSON.stringify(scheduleConfig || {}) }),
         ...(priority !== undefined && { priority }),
       }
     })
