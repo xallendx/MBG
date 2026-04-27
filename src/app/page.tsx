@@ -52,35 +52,46 @@ const PROJECT_COLORS = ['#000080', '#008000', '#800000', '#808000', '#800080', '
 const PRIORITY_DOT: Record<string, string> = { high: '#CC0000', medium: '#DAA520', low: '#228B22' }
 const PRIORITY_LABEL: Record<string, string> = { high: '🔴 Tinggi', medium: '🟡 Sedang', low: '🟢 Rendah' }
 
-/* ===== Context menu viewport clamp — rough pre-position before render ===== */
+/* ===== Context menu viewport clamp — pre-position before render (rough estimate) ===== */
 const clampPos = (x: number, y: number) => {
   if (typeof window === 'undefined') return { x, y }
-  // Generous padding so menu doesn't flash off-screen before useEffect adjusts
-  const pad = 16
+  const pad = 8
   return { x: Math.min(Math.max(pad, x), window.innerWidth - pad), y: Math.min(Math.max(pad, y), window.innerHeight - pad) }
 }
 
-/* ===== Post-render viewport clamp utility — measures actual element ===== */
+/* ===== Post-render viewport clamp — measures actual element, flips if needed ===== */
 const clampElementToViewport = (el: HTMLElement | null) => {
   if (!el || typeof window === 'undefined') return
   const rect = el.getBoundingClientRect()
   const vw = window.innerWidth
   const vh = window.innerHeight
   const pad = 4
-  // Clamp right overflow
+  let clamped = false
+  // Flip right → left if overflowing right edge
   if (rect.right > vw - pad) {
-    el.style.left = Math.max(pad, vw - rect.width - pad) + 'px'
+    el.style.left = 'auto'
+    el.style.right = pad + 'px'
+    clamped = true
   }
-  // Clamp bottom overflow — if too tall, anchor to bottom of viewport
+  // Flip bottom → top (anchor to click Y) if overflowing bottom edge
   if (rect.bottom > vh - pad) {
-    el.style.top = Math.max(pad, vh - rect.height - pad) + 'px'
+    const top = vh - rect.height - pad
+    // If still overflows from top, let CSS max-height + overflow-y handle it
+    el.style.top = (top > pad ? top : pad) + 'px'
+    clamped = true
   }
-  // Clamp left/top (shouldn't happen but safety)
-  if (rect.left < pad) {
-    el.style.left = pad + 'px'
-  }
-  if (rect.top < pad) {
-    el.style.top = pad + 'px'
+  // Re-measure after adjustments to handle cascading overflow
+  if (clamped) {
+    const r2 = el.getBoundingClientRect()
+    if (r2.right > vw - pad && el.style.right === '') {
+      el.style.left = Math.max(pad, vw - r2.width - pad) + 'px'
+    }
+    if (r2.left < pad) {
+      if (el.style.right !== '') {
+        el.style.right = ''
+      }
+      el.style.left = pad + 'px'
+    }
   }
 }
 

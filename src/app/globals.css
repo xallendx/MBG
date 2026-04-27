@@ -957,6 +957,25 @@ body {
   -webkit-overflow-scrolling: touch;
 }
 
+/* Win95 scrollbar for context menus */
+.win95-context-menu::-webkit-scrollbar {
+  width: 16px;
+}
+.win95-context-menu::-webkit-scrollbar-track {
+  background: repeating-conic-gradient(var(--win95-bg) 0% 25%, #fff 0% 50%) 0 0 / 2px 2px;
+}
+.win95-context-menu::-webkit-scrollbar-thumb {
+  background: var(--win95-bg);
+  border: 1px solid;
+  border-color: var(--win95-white) var(--win95-darker) var(--win95-darker) var(--win95-white);
+}
+.win95-context-menu::-webkit-scrollbar-button {
+  background: var(--win95-bg);
+  border: 1px solid;
+  border-color: var(--win95-white) var(--win95-darker) var(--win95-darker) var(--win95-white);
+  height: 16px;
+}
+
 .win95-context-item {
   padding: 3px 20px 3px 8px;
   cursor: pointer;
