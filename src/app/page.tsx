@@ -728,12 +728,21 @@ export default function MBGPage() {
   /* ===== Clock: direct DOM — no React re-render every second ===== */
   useEffect(() => {
     const update = () => {
-      if (!clockRef.current) return
-      const fmt = clockRef.current.dataset.fmt || '24'
+      const el = clockRef.current
+      if (!el) return
+      const fmt = el.dataset.fmt || '24'
       const opts = fmt === '12'
         ? { hour: '2-digit' as const, minute: '2-digit' as const, hour12: true as const }
         : { hour: '2-digit' as const, minute: '2-digit' as const, hour12: false as const }
-      clockRef.current.childNodes[1].textContent = ' ' + new Date().toLocaleTimeString('id-ID', opts)
+      const timeStr = new Date().toLocaleTimeString('id-ID', opts)
+      // Find or create the time text node
+      let timeNode = el.querySelector('.clock-time')
+      if (!timeNode) {
+        timeNode = document.createElement('span')
+        timeNode.className = 'clock-time'
+        el.appendChild(timeNode)
+      }
+      timeNode.textContent = ' ' + timeStr
     }
     update()
     const i = setInterval(update, 1000)
