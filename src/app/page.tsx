@@ -49,6 +49,8 @@ const TZ_OPTIONS = [
   { value: 'WIT', label: 'WIT (UTC+9)' }
 ]
 const PROJECT_COLORS = ['#000080', '#008000', '#800000', '#808000', '#800080', '#008080', '#FF6600', '#9900CC']
+const PRIORITY_DOT: Record<string, string> = { high: '#CC0000', medium: '#DAA520', low: '#228B22' }
+const PRIORITY_LABEL: Record<string, string> = { high: '🔴 Tinggi', medium: '🟡 Sedang', low: '🟢 Rendah' }
 
 /* ===== Fix #1: Context menu viewport clamp helper ===== */
 const clampPos = (x: number, y: number, w = 160, h = 200) => {
@@ -170,11 +172,31 @@ export default function MBGPage() {
   const [batchCompleting, setBatchCompleting] = useState<string | null>(null)
   const [savingTask, setSavingTask] = useState(false)
   const [savingProject, setSavingProject] = useState(false)
-  // Global loading bar: shows thin progress at top of window during any async operation
+  // Global loading bar: shows thin progress at top of window ONLY for slow operations (>150ms)
+  // This prevents visual noise on fast operations while still giving feedback on slow ones
   const [globalLoading, setGlobalLoading] = useState(false)
-  const globalLoadingRef = useRef(false)
-  const showGlobalLoading = useCallback(() => { globalLoadingRef.current = true; setGlobalLoading(true) }, [])
-  const hideGlobalLoading = useCallback(() => { globalLoadingRef.current = false; setGlobalLoading(false) }, [])
+  const globalLoadingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const globalLoadingCountRef = useRef(0)
+  const showGlobalLoading = useCallback(() => {
+    globalLoadingCountRef.current++
+    // Only show after 150ms delay — fast operations skip the loading bar entirely
+    if (!globalLoadingTimerRef.current) {
+      globalLoadingTimerRef.current = setTimeout(() => {
+        if (globalLoadingCountRef.current > 0) setGlobalLoading(true)
+        globalLoadingTimerRef.current = null
+      }, 150)
+    }
+  }, [])
+  const hideGlobalLoading = useCallback(() => {
+    globalLoadingCountRef.current = Math.max(0, globalLoadingCountRef.current - 1)
+    if (globalLoadingCountRef.current === 0) {
+      if (globalLoadingTimerRef.current) {
+        clearTimeout(globalLoadingTimerRef.current)
+        globalLoadingTimerRef.current = null
+      }
+      setGlobalLoading(false)
+    }
+  }, [])
 
   // Fix #9: Move dialog
   const [moveDialogTask, setMoveDialogTask] = useState<Task | null>(null)
@@ -864,7 +886,14 @@ export default function MBGPage() {
   useEffect(() => {
     if (dialogType === 'detail' && selectedTaskId) {
       const fresh = tasks.find(t => t.id === selectedTaskId)
-      if (fresh) detailRef.current = fresh
+      if (fresh) {
+        detailRef.current = fresh
+      } else {
+        // Task was deleted while detail dialog is open — close the dialog
+        detailRef.current = null
+        setDialogType(null)
+        setSelectedTaskId(null)
+      }
     }
   }, [tasks, dialogType, selectedTaskId])
 
@@ -919,6 +948,8 @@ export default function MBGPage() {
       if (undoTimerRef.current) clearInterval(undoTimerRef.current)
       if (pomodoroTimerRef.current) clearInterval(pomodoroTimerRef.current)
       if (longPressTimerRef.current) { clearTimeout(longPressTimerRef.current); longPressTimerRef.current = null }
+      if (globalLoadingTimerRef.current) { clearTimeout(globalLoadingTimerRef.current); globalLoadingTimerRef.current = null }
+      if (saveToCacheRaf.current) cancelAnimationFrame(saveToCacheRaf.current)
       toastTimersRef.current.forEach(t => clearTimeout(t))
       fetchTimeoutsRef.current.forEach(t => clearTimeout(t))
     }
@@ -943,8 +974,11 @@ export default function MBGPage() {
   }
 
   /* ===== Task CRUD ===== */
+  // Ref-based guard for double-completion (avoids stale closure issue with completingIds state)
+  const completingIdsRef = useRef<Set<string>>(new Set())
   const complete = async (id: string) => {
-    if (completingIds.has(id)) return
+    if (completingIdsRef.current.has(id)) return
+    completingIdsRef.current.add(id)
     setCompletingIds(p => new Set(p).add(id))
     showGlobalLoading()
     try {
@@ -957,7 +991,7 @@ export default function MBGPage() {
       delayedFetch()
     }
     catch { toast('Gagal menyelesaikan task', 'error') }
-    finally { setCompletingIds(p => { const n = new Set(p); n.delete(id); return n }); hideGlobalLoading() }
+    finally { completingIdsRef.current.delete(id); setCompletingIds(p => { const n = new Set(p); n.delete(id); return n }); hideGlobalLoading() }
   }
 
   const resetTask = async (id: string) => {
@@ -1235,7 +1269,7 @@ export default function MBGPage() {
       if (!r.ok) { toast('Gagal export', 'error'); return }
       const b = await r.blob()
       const u = URL.createObjectURL(b); const a = document.createElement('a')
-      a.href = u; a.download = `mbg-backup-${new Date().toISOString().slice(0, 10)}.json`; a.click(); URL.revokeObjectURL(u)
+      a.href = u; a.download = `mbg-backup-${new Date().toISOString().slice(0, 10)}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(u), 1000)
       toast('Backup diunduh!', 'success')
     } catch { toast('Gagal mengunduh backup', 'error') }
     finally { hideGlobalLoading() }
@@ -1266,7 +1300,7 @@ export default function MBGPage() {
       const d = await r.json()
       const blob = new Blob([JSON.stringify(d, null, 2)], { type: 'application/json' })
       const u = URL.createObjectURL(blob); const a = document.createElement('a')
-      a.href = u; a.download = `mbg-project-${d.project?.name || 'export'}-${new Date().toISOString().slice(0, 10)}.json`; a.click(); URL.revokeObjectURL(u)
+      a.href = u; a.download = `mbg-project-${d.project?.name || 'export'}-${new Date().toISOString().slice(0, 10)}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(u), 1000)
       toast('Project diunduh!', 'success')
     } catch { toast('Gagal export project', 'error') }
     finally { hideGlobalLoading() }
@@ -1722,6 +1756,8 @@ export default function MBGPage() {
   /* ===== Long-press handlers for mobile context menu ===== */
   const handleTouchStart = (e: React.TouchEvent, t: Task) => {
     const touch = e.touches[0]
+    // Cancel any existing long-press timer (prevents ghost context menus when switching between task/project)
+    if (longPressTimerRef.current) { clearTimeout(longPressTimerRef.current); longPressTimerRef.current = null }
     longPressPosRef.current = { x: touch.clientX, y: touch.clientY }
     longPressMovedRef.current = false
     longPressTaskRef.current = t
@@ -1739,6 +1775,8 @@ export default function MBGPage() {
 
   const handleProjTouchStart = (e: React.TouchEvent, p: Project) => {
     const touch = e.touches[0]
+    // Cancel any existing long-press timer (prevents ghost context menus when switching between task/project)
+    if (longPressTimerRef.current) { clearTimeout(longPressTimerRef.current); longPressTimerRef.current = null }
     longPressPosRef.current = { x: touch.clientX, y: touch.clientY }
     longPressMovedRef.current = false
     longPressProjectRef.current = p
@@ -1967,8 +2005,6 @@ export default function MBGPage() {
   }
 
   /* ===== Render: Task Row ===== */
-  const PRIORITY_DOT: Record<string, string> = { high: '#CC0000', medium: '#DAA520', low: '#228B22' }
-  const PRIORITY_LABEL: Record<string, string> = { high: '🔴 Tinggi', medium: '🟡 Sedang', low: '🟢 Rendah' }
 
   const renderRow = (t: Task) => {
     const done = t.status === 'selesai', loading = completingIds.has(t.id)
@@ -2746,7 +2782,7 @@ export default function MBGPage() {
       {/* ===== ADD PROJECT DIALOG ===== */}
       {dialogType === 'add-project' && (
         <div className="win95-dialog-overlay" onClick={() => setDialogType(null)}>
-          <div className="win95-dialog" onClick={e => e.stopPropagation()}>
+          <div className="win95-dialog" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
             <div className="win95-titlebar"><span className="win95-titlebar-text">📁 Buat Project Baru</span><button className="win95-titlebar-btn" onClick={() => setDialogType(null)}>✕</button></div>
             <div className="win95-dialog-body">
               <div className="win95-field"><label>Nama Project *</label><input type="text" className="win95-input" value={formProjectName} onChange={e => setFormProjectName(e.target.value)} placeholder="Contoh: LayerZero" autoFocus onKeyDown={e => { if (e.key === 'Enter' && formProjectName.trim() && !savingProject) { addProject(formProjectName, formProjectColor).then(() => setDialogType(null)) } }} /></div>
@@ -2772,7 +2808,7 @@ export default function MBGPage() {
       {/* ===== ADD/EDIT TASK DIALOG ===== */}
       {(dialogType === 'add' || dialogType === 'edit') && (
         <div className="win95-dialog-overlay" onClick={() => setDialogType(null)}>
-          <div className="win95-dialog" onClick={e => e.stopPropagation()}>
+          <div className="win95-dialog" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
             <div className="win95-titlebar">
               <span className="win95-titlebar-text">{dialogType === 'add' ? `Tambah Task` : 'Edit Task'}</span>
               <button className="win95-titlebar-btn" onClick={() => setDialogType(null)}>✕</button>
@@ -2850,7 +2886,7 @@ export default function MBGPage() {
       {/* ===== SETTINGS DIALOG ===== */}
       {dialogType === 'settings' && (
         <div className="win95-dialog-overlay" onClick={() => setDialogType(null)}>
-          <div className="win95-dialog" onClick={e => e.stopPropagation()}>
+          <div className="win95-dialog" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
             <div className="win95-titlebar"><span className="win95-titlebar-text">Pengaturan</span><button className="win95-titlebar-btn" onClick={() => setDialogType(null)}>✕</button></div>
             <div className="win95-dialog-body">
               <div className="win95-field"><label>Timezone</label><select className="win95-select" value={formTimezone} onChange={e => setFormTimezone(e.target.value)}>{TZ_OPTIONS.map(tz => <option key={tz.value} value={tz.value}>{tz.label}</option>)}</select></div>
@@ -2929,7 +2965,7 @@ export default function MBGPage() {
       {/* ===== EDIT PROJECT DIALOG ===== */}
       {dialogType === 'edit-project' && (
         <div className="win95-dialog-overlay" onClick={() => setDialogType(null)}>
-          <div className="win95-dialog" onClick={e => e.stopPropagation()}>
+          <div className="win95-dialog" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
             <div className="win95-titlebar"><span className="win95-titlebar-text">Edit Project</span><button className="win95-titlebar-btn" onClick={() => setDialogType(null)}>✕</button></div>
             <div className="win95-dialog-body">
               <div className="win95-field"><label>Nama Project</label><input type="text" className="win95-input" value={formProjectName} onChange={e => setFormProjectName(e.target.value)} /></div>
@@ -2953,7 +2989,7 @@ export default function MBGPage() {
       {/* ===== TELEGRAM DIALOG ===== */}
       {dialogType === 'telegram' && (
         <div className="win95-dialog-overlay" onClick={() => setDialogType(null)}>
-          <div className="win95-dialog" onClick={e => e.stopPropagation()} style={{ maxWidth: 420 }}>
+          <div className="win95-dialog" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()} style={{ maxWidth: 420 }}>
             <div className="win95-titlebar"><span className="win95-titlebar-text">📱 Telegram</span><button className="win95-titlebar-btn" onClick={() => setDialogType(null)}>✕</button></div>
             <div className="win95-dialog-body">
               {/* Connection Status */}
@@ -3050,7 +3086,7 @@ export default function MBGPage() {
       {/* ===== Fix #9: MOVE TASK DIALOG ===== */}
       {moveDialogTask && (
         <div className="win95-dialog-overlay" onClick={() => setMoveDialogTask(null)}>
-          <div className="win95-dialog move-dialog" onClick={e => e.stopPropagation()}>
+          <div className="win95-dialog move-dialog" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
             <div className="win95-titlebar"><span className="win95-titlebar-text">📦 Pindah Task</span><button className="win95-titlebar-btn" onClick={() => setMoveDialogTask(null)}>✕</button></div>
             <div className="win95-dialog-body">
               <div style={{ fontSize: 11, marginBottom: 8 }}>
@@ -3077,7 +3113,7 @@ export default function MBGPage() {
       {/* ===== CONFIRM DIALOG ===== */}
       {confirmData && (
         <div className="win95-dialog-overlay" onClick={() => setConfirmData(null)}>
-          <div className="win95-dialog" style={{ maxWidth: 350 }} onClick={e => e.stopPropagation()}>
+          <div className="win95-dialog" style={{ maxWidth: 350 }} onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
             <div className="win95-titlebar"><span className="win95-titlebar-text">{confirmData.title}</span><button className="win95-titlebar-btn" onClick={() => setConfirmData(null)}>✕</button></div>
             <div className="win95-dialog-body" style={{ display: 'flex', alignItems: 'flex-start' }}><span className="win95-confirm-icon">⚠️</span><span className="win95-confirm-text">{confirmData.message}</span></div>
             <div className="win95-dialog-footer"><button className="win95-btn primary" onClick={confirmData.onConfirm}>Ya</button><button className="win95-btn" onClick={() => setConfirmData(null)}>Tidak</button></div>
@@ -3118,7 +3154,7 @@ export default function MBGPage() {
       {/* ===== SHARE PROJECT DIALOG ===== */}
       {dialogType === 'share' && (
         <div className="win95-dialog-overlay" onClick={() => setDialogType(null)}>
-          <div className="win95-dialog" onClick={e => e.stopPropagation()}>
+          <div className="win95-dialog" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
             <div className="win95-titlebar"><span className="win95-titlebar-text">🔗 Share Project</span><button className="win95-titlebar-btn" onClick={() => setDialogType(null)}>✕</button></div>
             <div className="win95-dialog-body">
               {!shareCode ? (
@@ -3166,7 +3202,7 @@ export default function MBGPage() {
       {/* ===== IMPORT SHARE CODE DIALOG ===== */}
       {dialogType === 'import-share' && (
         <div className="win95-dialog-overlay" onClick={() => setDialogType(null)}>
-          <div className="win95-dialog" onClick={e => e.stopPropagation()}>
+          <div className="win95-dialog" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
             <div className="win95-titlebar"><span className="win95-titlebar-text">📥 Import Share Code</span><button className="win95-titlebar-btn" onClick={() => setDialogType(null)}>✕</button></div>
             <div className="win95-dialog-body">
               <div className="win95-field">
@@ -3217,7 +3253,7 @@ export default function MBGPage() {
       {/* ===== TEMPLATE TASK DIALOG ===== */}
       {dialogType === 'templates' && (
         <div className="win95-dialog-overlay" onClick={() => setDialogType(null)}>
-          <div className="win95-dialog" onClick={e => e.stopPropagation()} style={{ maxWidth: 500, maxHeight: '85vh', overflowY: 'auto' }}>
+          <div className="win95-dialog" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()} style={{ maxWidth: 500, maxHeight: '85vh', overflowY: 'auto' }}>
             <div className="win95-titlebar"><span className="win95-titlebar-text">📋 Template Task</span><button className="win95-titlebar-btn" onClick={() => setDialogType(null)}>✕</button></div>
             <div className="win95-dialog-body">
               {templateDialogOpen ? (
@@ -3438,7 +3474,7 @@ export default function MBGPage() {
       {/* ===== ADMIN PANEL DIALOG ===== */}
       {dialogType === 'admin' && isAdmin && (
         <div className="win95-dialog-overlay" onClick={() => setDialogType(null)}>
-          <div className="win95-dialog" style={{ maxWidth: 700, width: '95vw', maxHeight: '85vh' }} onClick={e => e.stopPropagation()}>
+          <div className="win95-dialog" style={{ maxWidth: 700, width: '95vw', maxHeight: '85vh' }} onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
             <div className="win95-titlebar">
               <span className="win95-titlebar-text">👑 Panel Admin</span>
               <button className="win95-titlebar-btn" onClick={() => setDialogType(null)}>✕</button>
@@ -3665,7 +3701,7 @@ function DetailDialog({ task, onClose, onEdit, onComplete, onReset, onDelete, on
 
   return (
     <div className="win95-dialog-overlay" onClick={onClose}>
-      <div className="win95-dialog" onClick={e => e.stopPropagation()} style={{ maxWidth: 420 }}>
+      <div className="win95-dialog" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()} style={{ maxWidth: 420 }}>
         <div className="win95-titlebar"><span className="win95-titlebar-text">📋 {task.name}</span><button className="win95-titlebar-btn" onClick={onClose}>✕</button></div>
         <div className="win95-dialog-body">
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
