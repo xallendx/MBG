@@ -1182,9 +1182,9 @@ export default function MBGPage() {
   }
 
   const saveNotes = async (id: string, notes: string) => {
-    showGlobalLoading()
+    // Optimistic: update local notes immediately
+    setTasks(prev => prev.map(t => t.id === id ? { ...t, notes } : t))
     try { const res = await api(`/api/tasks/${id}`, jsonOpts('PUT', { notes })); if (!res.ok) { toast('Gagal menyimpan catatan', 'error'); return } } catch { toast('Gagal menyimpan catatan', 'error') }
-    finally { hideGlobalLoading() }
   }
 
   const togglePin = async (task: Task) => {
@@ -1445,7 +1445,6 @@ export default function MBGPage() {
   }
 
   const doExport = async () => {
-    showGlobalLoading()
     try {
       const r = await api('/api/export')
       if (!r.ok) { toast('Gagal export', 'error'); return }
@@ -1453,12 +1452,10 @@ export default function MBGPage() {
       downloadBlob(b, `mbg-backup-${new Date().toISOString().slice(0, 10)}.json`)
       toast('Backup diunduh!', 'success')
     } catch { toast('Gagal mengunduh backup', 'error') }
-    finally { hideGlobalLoading() }
   }
 
   const doImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0]; if (!f) return
-    showGlobalLoading()
     try {
       const d = JSON.parse(await f.text())
       if (!d.tasks) { toast('Format file salah', 'error'); return }
@@ -1468,13 +1465,11 @@ export default function MBGPage() {
       if (res.success) { toast(`Import: ${res.imported.projects} project, ${res.imported.tasks} task`); fetchData() }
       else toast('Gagal: ' + (res.error || ''))
     } catch { toast('File tidak valid', 'error') }
-    finally { hideGlobalLoading() }
     if (fileInputRef.current) fileInputRef.current.value = ''
   }
 
   /* ===== Per-Project Export / Import ===== */
   const doExportProject = async (projectId: string) => {
-    showGlobalLoading()
     try {
       const r = await api(`/api/projects/${projectId}/export`)
       if (!r.ok) { toast('Gagal export', 'error'); return }
@@ -1483,12 +1478,10 @@ export default function MBGPage() {
       downloadBlob(blob, `mbg-project-${(d.project?.name || 'export').replace(/[<>:"/\\|?*\x00]/g, '_')}-${new Date().toISOString().slice(0, 10)}.json`)
       toast('Project diunduh!', 'success')
     } catch { toast('Gagal export project', 'error') }
-    finally { hideGlobalLoading() }
   }
 
   const doImportProject = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0]; if (!f) return
-    showGlobalLoading()
     try {
       const d = JSON.parse(await f.text())
       if (!d.project || !d.tasks) { toast('Format file salah', 'error'); return }
@@ -1499,7 +1492,6 @@ export default function MBGPage() {
       if (res.success) { toast(`Import: ${res.taskCount} task ke project "${res.projectName}"`); fetchData() }
       else toast('Gagal: ' + (res.error || ''))
     } catch { toast('File tidak valid', 'error') }
-    finally { hideGlobalLoading() }
     if (fileInputProjectImportRef.current) fileInputProjectImportRef.current.value = ''
     projectImportTargetRef.current = null
   }
@@ -1525,13 +1517,13 @@ export default function MBGPage() {
   }
 
   const saveTelegramBotUsername = async () => {
-    showGlobalLoading()
+    // Optimistic: update local setting immediately
+    setTelegramBotUsername(telegramBotUsername.trim())
     try {
       const res = await api('/api/settings', jsonOpts('PUT', { telegramBotUsername: telegramBotUsername.trim() }))
       if (!res.ok) { toast('Gagal menyimpan', 'error'); return }
       toast('Bot username disimpan!', 'success')
     } catch { toast('Gagal menyimpan', 'error') }
-    finally { hideGlobalLoading() }
   }
 
   /* ===== Fix B4: Open link FIRST (avoid popup blocker), then complete ===== */
@@ -1600,14 +1592,15 @@ export default function MBGPage() {
   /* Fix B3: undoWorkingComplete deletes last log instead of full reset */
   const undoWorkingComplete = async () => {
     if (workingTaskId) {
-      showGlobalLoading()
+      // Optimistic: revert task status locally + cancel working UI immediately
+      cancelWorking()
       try {
         const res = await api(`/api/tasks/${workingTaskId}/undo`, { method: 'POST' })
-        if (!res.ok) { toast('Gagal membatalkan task', 'error'); return }
+        if (!res.ok) { toast('Gagal membatalkan task', 'error'); delayedFetch(); return }
         toast('Task dibatalkan!', 'success')
-        fetchData()
-      } catch { toast('Gagal membatalkan task', 'error') }
-      finally { hideGlobalLoading() }
+        delayedFetch()
+      } catch { toast('Gagal membatalkan task', 'error'); delayedFetch() }
+      return
     }
     cancelWorking()
   }
@@ -1624,7 +1617,7 @@ export default function MBGPage() {
   const doShareProject = async () => {
     if (!selectedTaskId || shareLoading) return
     setShareLoading(true)
-    showGlobalLoading()
+    // No global loading — shareLoading state handles UI feedback
     try {
       const res = await api(`/api/projects/${selectedTaskId}/share`, { method: 'POST' })
       if (!res.ok) { const err = await res.json().catch(() => ({})); toast('Gagal: ' + (err.error || '')); return }
@@ -1632,7 +1625,7 @@ export default function MBGPage() {
       setShareCode(data.code)
       setShareTaskCount(data.taskCount)
     } catch { toast('Gagal share', 'error') }
-    finally { setShareLoading(false); hideGlobalLoading(); setConfirmData(null) }
+    finally { setShareLoading(false); setConfirmData(null) }
   }
 
   const copyShareCode = () => {
@@ -1651,21 +1644,21 @@ export default function MBGPage() {
     const code = importCode.trim().toUpperCase()
     if (code.length !== 6) { toast('Kode harus 6 karakter', 'error'); return }
     setImportChecking(true)
-    showGlobalLoading()
+    // No global loading — importChecking state handles UI feedback
     try {
       const res = await api(`/api/share/${code}`)
       if (!res.ok) { const err = await res.json().catch(() => ({})); toast(err.error || 'Kode tidak valid', 'error'); setImportPreview(null); return }
       const data = await res.json()
       setImportPreview({ project: data.project, taskCount: data.taskCount })
     } catch { toast('Gagal cek kode', 'error') }
-    finally { setImportChecking(false); hideGlobalLoading() }
+    finally { setImportChecking(false) }
   }
 
   const doImportShare = async () => {
     const code = importCode.trim().toUpperCase()
     if (!importPreview || importLoading) return
     setImportLoading(true)
-    showGlobalLoading()
+    // No global loading — importLoading state handles UI feedback
     try {
       const res = await api(`/api/share/${code}/import`, { method: 'POST' })
       if (!res.ok) { const err = await res.json().catch(() => ({})); toast('Gagal: ' + (err.error || '')); return }
@@ -1674,13 +1667,21 @@ export default function MBGPage() {
       setDialogType(null)
       fetchData()
     } catch { toast('Gagal import', 'error') }
-    finally { setImportLoading(false); hideGlobalLoading() }
+    finally { setImportLoading(false) }
   }
 
   /* ===== Notes CRUD ===== */
   const saveNote = async () => {
     if (!noteFormContent.trim()) { toast('Isi catatan dulu!', 'error'); return }
-    showGlobalLoading()
+    // Optimistic: add/update note locally immediately
+    if (editingNoteId) {
+      setNotes(prev => prev.map(n => n.id === editingNoteId ? { ...n, content: noteFormContent, color: noteFormColor } : n))
+    } else {
+      const tempId = 'temp-note-' + Date.now()
+      setNotes(prev => [{ id: tempId, content: noteFormContent, color: noteFormColor, pinned: false, userId: authUser?.id || '', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as Note, ...prev])
+    }
+    toast(editingNoteId ? 'Catatan diperbarui!' : 'Catatan ditambahkan!', 'success')
+    setNoteFormContent(''); setNoteFormColor('#FFFFCC'); setEditingNoteId(null)
     try {
       let res: Response
       if (editingNoteId) {
@@ -1688,25 +1689,29 @@ export default function MBGPage() {
       } else {
         res = await api('/api/notes', jsonOpts('POST', { content: noteFormContent, color: noteFormColor }))
       }
-      if (!res.ok) { toast('Gagal simpan catatan', 'error'); return }
-      toast(editingNoteId ? 'Catatan diperbarui!' : 'Catatan ditambahkan!', 'success')
-      setNoteFormContent(''); setNoteFormColor('#FFFFCC'); setEditingNoteId(null)
+      if (!res.ok) { toast('Gagal simpan catatan', 'error'); fetchNotes(); return }
       fetchNotes()
-    } catch { toast('Gagal simpan catatan', 'error') }
-    finally { hideGlobalLoading() }
+    } catch { toast('Gagal simpan catatan', 'error'); fetchNotes() }
   }
 
   const deleteNote = (id: string) => {
     setConfirmData({
       title: 'Hapus Catatan', message: 'Yakin hapus catatan ini?',
-      onConfirm: async () => { showGlobalLoading(); try { const res = await api(`/api/notes/${id}`, { method: 'DELETE' }); if (!res.ok) { toast('Gagal menghapus', 'error'); return } toast('Catatan dihapus!', 'success'); fetchNotes() } catch { toast('Gagal', 'error') } finally { hideGlobalLoading() }; setConfirmData(null) }
+      onConfirm: async () => {
+        // Optimistic: remove note locally immediately
+        setNotes(prev => prev.filter(n => n.id !== id))
+        toast('Catatan dihapus!', 'success')
+        try { const res = await api(`/api/notes/${id}`, { method: 'DELETE' }); if (!res.ok) { toast('Gagal menghapus', 'error'); fetchNotes(); return } fetchNotes() }
+        catch { toast('Gagal', 'error'); fetchNotes() }
+        setConfirmData(null)
+      }
     })
   }
 
   const toggleNotePin = async (note: Note) => {
-    showGlobalLoading()
-    try { const res = await api(`/api/notes/${note.id}`, jsonOpts('PUT', { pinned: !note.pinned })); if (!res.ok) { toast('Gagal', 'error'); return } fetchNotes() } catch { toast('Gagal', 'error') }
-    finally { hideGlobalLoading() }
+    // Optimistic: toggle pin locally immediately
+    setNotes(prev => prev.map(n => n.id === note.id ? { ...n, pinned: !note.pinned } : n))
+    try { const res = await api(`/api/notes/${note.id}`, jsonOpts('PUT', { pinned: !note.pinned })); if (!res.ok) { toast('Gagal', 'error'); fetchNotes(); return } fetchNotes() } catch { toast('Gagal', 'error'); fetchNotes() }
   }
 
   const openEditNote = (note: Note) => {
@@ -1821,18 +1826,18 @@ export default function MBGPage() {
   }
 
   const toggleBlockUser = async (user: { id: string; username: string; isBlocked: boolean }) => {
-    showGlobalLoading()
+    // Optimistic: toggle block status locally immediately
+    setAdminUsers(prev => prev.map(u => u.id === user.id ? { ...u, isBlocked: !u.isBlocked } : u))
+    toast(user.isBlocked ? `${user.username} di-unblock` : `${user.username} di-block`)
     try {
       const res = await api(`/api/admin/users/${user.id}`, jsonOpts('PUT', { isBlocked: !user.isBlocked }))
-      if (!res.ok) { toast('Gagal mengubah status user', 'error'); return }
-      toast(user.isBlocked ? `${user.username} di-unblock` : `${user.username} di-block`)
+      if (!res.ok) { toast('Gagal mengubah status user', 'error'); fetchAdminData(); return }
       fetchAdminData()
-    } catch { toast('Gagal', 'error') }
-    finally { hideGlobalLoading() }
+    } catch { toast('Gagal', 'error'); fetchAdminData() }
   }
 
   const createUserInviteCode = async (role: string) => {
-    showGlobalLoading()
+    // No global loading — toast is sufficient feedback
     try {
       const res = await api('/api/admin/invite-codes', jsonOpts('POST', { role }))
       if (res.ok) {
@@ -1843,33 +1848,35 @@ export default function MBGPage() {
         toast('Gagal: ' + (err.error || ''))
       }
     } catch { toast('Gagal membuat kode', 'error') }
-    finally { hideGlobalLoading() }
   }
 
   const deleteInviteCode = async (code: { id: string; code: string }) => {
-    showGlobalLoading()
+    // Optimistic: remove code locally immediately
+    setAdminInviteCodes(prev => prev.filter(c => c.id !== code.id))
+    toast(`Kode ${code.code} dihapus`)
     try {
       const res = await api(`/api/admin/invite-codes/${code.id}`, { method: 'DELETE' })
-      if (res.ok) { toast(`Kode ${code.code} dihapus`); fetchAdminData() }
-      else toast('Gagal menghapus', 'error')
-    } catch { toast('Gagal', 'error') }
-    finally { hideGlobalLoading() }
+      if (res.ok) { fetchAdminData() }
+      else { toast('Gagal menghapus', 'error'); fetchAdminData() }
+    } catch { toast('Gagal', 'error'); fetchAdminData() }
   }
 
   /* ===== Settings ===== */
   const saveSettings = async () => {
-    showGlobalLoading()
+    // Optimistic: apply settings locally immediately
+    const newSettings = { ...settings, timezone: formTimezone, timeFormat: formTimeFormat, autoExpandSiap: formAutoExpandSiap, autoCompleteLink: formAutoCompleteLink, telegramNotifEnabled: formTelegramNotif, browserNotifEnabled: formBrowserNotif, pomodoroDuration: formPomodoroDuration, audioAlertEnabled: formAudioAlertEnabled }
+    setSettings(newSettings)
+    toast('Disimpan!', 'success')
+    setDialogType(null)
     try {
       const res = await api('/api/settings', jsonOpts('PUT', { timezone: formTimezone, timeFormat: formTimeFormat, autoExpandSiap: formAutoExpandSiap, autoCompleteLink: formAutoCompleteLink, telegramNotifEnabled: formTelegramNotif, browserNotifEnabled: formBrowserNotif, pomodoroDuration: formPomodoroDuration, audioAlertEnabled: formAudioAlertEnabled }))
-      if (!res.ok) { toast('Gagal', 'error'); return }
+      if (!res.ok) { toast('Gagal menyimpan di server', 'error'); return }
       // If user disabled browser notif, unregister push subscription
       if (formBrowserNotif !== settings.browserNotifEnabled && !formBrowserNotif) {
         unregisterPushSubscription()
       }
-      toast('Disimpan!', 'success'); setDialogType(null); delayedFetch() // Use delayed instead of immediate fetch
-    }
-    catch { toast('Gagal', 'error') }
-    finally { hideGlobalLoading() }
+      delayedFetch()
+    } catch { toast('Gagal menyimpan di server', 'error') }
   }
 
   /* ===== Openers ===== */
@@ -2013,7 +2020,23 @@ export default function MBGPage() {
   /* ===== Template CRUD ===== */
   const saveTemplate = async () => {
     if (!formTemplateName.trim()) { toast('Nama template wajib diisi!', 'error'); return }
-    showGlobalLoading()
+    // Optimistic: update template list locally immediately
+    const newTemplate: TaskTemplate = {
+      id: editingTemplate?.id || 'temp-tpl-' + Date.now(),
+      name: formTemplateName, description: formTemplateDesc || null, link: formTemplateLink || null,
+      scheduleType: formTemplateScheduleType, scheduleConfig: JSON.stringify(formTemplateScheduleConfig), priority: formTemplatePriority,
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+    }
+    if (editingTemplate) {
+      setTemplates(prev => prev.map(t => t.id === editingTemplate.id ? newTemplate : t))
+      toast('Template diperbarui!', 'success')
+    } else {
+      setTemplates(prev => [newTemplate, ...prev])
+      toast('Template ditambahkan!', 'success')
+    }
+    setFormTemplateName(''); setFormTemplateDesc(''); setFormTemplateLink('')
+    setFormTemplateScheduleType('sekali'); setFormTemplateScheduleConfig({}); setFormTemplatePriority('medium')
+    setEditingTemplate(null); setTemplateDialogOpen(false)
     try {
       let res: Response
       if (editingTemplate) {
@@ -2021,32 +2044,27 @@ export default function MBGPage() {
           name: formTemplateName, description: formTemplateDesc || null, link: formTemplateLink || null,
           scheduleType: formTemplateScheduleType, scheduleConfig: formTemplateScheduleConfig, priority: formTemplatePriority
         }))
-        if (!res.ok) { toast('Gagal memperbarui template', 'error'); return }
-        toast('Template diperbarui!', 'success')
+        if (!res.ok) { toast('Gagal memperbarui template', 'error'); fetchTemplates(); return }
       } else {
         res = await api('/api/templates', jsonOpts('POST', {
           name: formTemplateName, description: formTemplateDesc || null, link: formTemplateLink || null,
           scheduleType: formTemplateScheduleType, scheduleConfig: formTemplateScheduleConfig, priority: formTemplatePriority
         }))
-        if (!res.ok) { toast('Gagal menambahkan template', 'error'); return }
-        toast('Template ditambahkan!', 'success')
+        if (!res.ok) { toast('Gagal menambahkan template', 'error'); fetchTemplates(); return }
       }
-      setFormTemplateName(''); setFormTemplateDesc(''); setFormTemplateLink('')
-      setFormTemplateScheduleType('sekali'); setFormTemplateScheduleConfig({}); setFormTemplatePriority('medium')
-      setEditingTemplate(null); setTemplateDialogOpen(false)
       fetchTemplates()
-    } catch { toast('Gagal menyimpan template', 'error') }
-    finally { hideGlobalLoading() }
+    } catch { toast('Gagal menyimpan template', 'error'); fetchTemplates() }
   }
 
   const deleteTemplate = (id: string) => {
     setConfirmData({
       title: 'Hapus Template', message: 'Yakin hapus template ini?',
       onConfirm: async () => {
-        showGlobalLoading()
-        try { const res = await api(`/api/templates/${id}`, { method: 'DELETE' }); if (!res.ok) { toast('Gagal menghapus', 'error'); return } toast('Template dihapus!', 'success'); fetchTemplates() }
-        catch { toast('Gagal menghapus', 'error') }
-        finally { hideGlobalLoading() }
+        // Optimistic: remove template locally immediately
+        setTemplates(prev => prev.filter(t => t.id !== id))
+        toast('Template dihapus!', 'success')
+        try { const res = await api(`/api/templates/${id}`, { method: 'DELETE' }); if (!res.ok) { toast('Gagal menghapus', 'error'); fetchTemplates(); return } fetchTemplates() }
+        catch { toast('Gagal menghapus', 'error'); fetchTemplates() }
         setConfirmData(null)
       }
     })
