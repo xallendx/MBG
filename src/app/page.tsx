@@ -373,7 +373,8 @@ export default function MBGPage() {
     return outputArray
   }
 
-  const requestNotifPermission = async () => {
+  // Stable callback — not recreated every render
+  const requestNotifPermission = useCallback(async () => {
     if (typeof Notification === 'undefined') return
     const perm = await Notification.requestPermission()
     setNotifPermission(perm)
@@ -381,7 +382,7 @@ export default function MBGPage() {
     if (perm === 'granted' && authUser?.id) {
       registerPushSubscription(authUser.id)
     }
-  }
+  }, [authUser?.id, registerPushSubscription])
 
   const sendBrowserNotif = useCallback((title: string, body: string) => {
     if (typeof Notification === 'undefined' || notifPermission !== 'granted') return
@@ -471,22 +472,11 @@ export default function MBGPage() {
       if (cache.settings) {
         settingsCacheRef.current = cache.settings as Settings
         setSettings(settingsCacheRef.current)
-        const sd = cache.settings as Record<string, unknown>
-        setFormTimezone(String(sd.timezone || 'WIB'))
-        setFormTimeFormat(sd.timeFormat === '12' ? '12' : '24')
-        setFormAutoExpandSiap(sd.autoExpandSiap !== false)
-        setFormAutoCompleteLink(sd.autoCompleteLink === true)
-        setFormTelegramNotif(sd.telegramNotifEnabled !== false)
-        setFormBrowserNotif(sd.browserNotifEnabled !== false)
-        setFormPomodoroDuration(Number(sd.pomodoroDuration) || 25)
-        setFormAudioAlertEnabled(sd.audioAlertEnabled !== false)
-        setTelegramLinked(!!sd.telegramChatId || !!sd.telegramId)
-        setTelegramName(String(sd.telegramName || ''))
-        setTelegramBotUsername(String(sd.telegramBotUsername || ''))
+        applySettingsToForm(cache.settings as Record<string, unknown>)
       }
       return true
     } catch { return false }
-  }, [authUser?.id, getCacheKey])
+  }, [authUser?.id, getCacheKey, applySettingsToForm])
 
   // Save current state to localStorage cache (debounced via rAF)
   const saveToCacheRaf = useRef(0)
@@ -692,27 +682,14 @@ export default function MBGPage() {
 
         const sd = (typeof data.settings === 'object' && !Array.isArray(data.settings)) ? data.settings as Record<string, unknown> : {}
         setSettings(newSettings)
-        setFormTimezone(String(sd.timezone || 'WIB'))
-        setFormTimeFormat(sd.timeFormat === '12' ? '12' : '24')
-        setFormAutoExpandSiap(sd.autoExpandSiap !== false)
-        setFormAutoCompleteLink(sd.autoCompleteLink === true)
-        setFormTelegramNotif(sd.telegramNotifEnabled !== false)
-        setFormBrowserNotif(sd.browserNotifEnabled !== false)
-        setFormPomodoroDuration(Number(sd.pomodoroDuration) || 25)
-        setFormAudioAlertEnabled(sd.audioAlertEnabled !== false)
-        setTelegramLinked(!!sd.telegramChatId)
-        setTelegramName(String(sd.telegramName || ''))
-        setTelegramBotUsername(String(sd.telegramBotUsername || ''))
-        if (!sd.telegramChatId && sd.telegramId) {
-          setTelegramLinked(true)
-        }
+        applySettingsToForm(sd)
 
         // Save to cache after successful fetch
         saveToCache()
       }
     } catch (e) { console.error('fetchData error:', e) }
     finally { setLoading(false) }
-  }, [ensureIdentified, loadFromCache, saveToCache, dedupedFetch])
+  }, [ensureIdentified, loadFromCache, saveToCache, dedupedFetch, applySettingsToForm])
 
   const fetchNotes = useCallback(async () => {
     try {
@@ -970,8 +947,12 @@ export default function MBGPage() {
     return () => clearInterval(i)
   }, [])
 
+  // Robust toast ID counter — no collisions (vs Date.now()+Math.random)
+  const toastIdRef = useRef(0)
   const toastTimersRef = useRef<ReturnType<typeof setTimeout>[]>([])
   const fetchTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([])
+  // Track all misc setTimeout calls for cleanup
+  const miscTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([])
   // Track last optimistic write time — prevent stale fetch from overwriting optimistic state
   const lastWriteTime = useRef(0)
   const SKIP_FETCH_AFTER_WRITE_MS = 8000 // Increased: Don't overwrite tasks/projects within 8s of a write (was 4s)
@@ -993,6 +974,7 @@ export default function MBGPage() {
       if (saveToCacheRaf.current) cancelAnimationFrame(saveToCacheRaf.current)
       toastTimersRef.current.forEach(t => clearTimeout(t))
       fetchTimeoutsRef.current.forEach(t => clearTimeout(t))
+      miscTimeoutsRef.current.forEach(t => clearTimeout(t))
     }
   }, [])
 
@@ -1004,7 +986,7 @@ export default function MBGPage() {
   useEffect(() => { if (authenticated && !loading) settingsCacheRef.current = settings }, [settings, authenticated, loading])
 
   const toast = (msg: string, type: 'success' | 'error' | 'info' = 'info') => {
-    const id = Date.now() + Math.random()
+    const id = ++toastIdRef.current
     setToasts(p => [...p, { msg, type, id }])
     const timer = setTimeout(() => {
       setToasts(p => p.filter(t => t.id !== id))
@@ -1439,14 +1421,21 @@ export default function MBGPage() {
   }
 
   /* ===== Export / Import ===== */
+  // Robust download helper — triggers download with cleanup
+  const downloadBlob = (blob: Blob, filename: string) => {
+    const u = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = u; a.download = filename; a.click()
+    setTimeout(() => URL.revokeObjectURL(u), 1000)
+  }
+
   const doExport = async () => {
     showGlobalLoading()
     try {
       const r = await api('/api/export')
       if (!r.ok) { toast('Gagal export', 'error'); return }
       const b = await r.blob()
-      const u = URL.createObjectURL(b); const a = document.createElement('a')
-      a.href = u; a.download = `mbg-backup-${new Date().toISOString().slice(0, 10)}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(u), 1000)
+      downloadBlob(b, `mbg-backup-${new Date().toISOString().slice(0, 10)}.json`)
       toast('Backup diunduh!', 'success')
     } catch { toast('Gagal mengunduh backup', 'error') }
     finally { hideGlobalLoading() }
@@ -1476,8 +1465,7 @@ export default function MBGPage() {
       if (!r.ok) { toast('Gagal export', 'error'); return }
       const d = await r.json()
       const blob = new Blob([JSON.stringify(d, null, 2)], { type: 'application/json' })
-      const u = URL.createObjectURL(blob); const a = document.createElement('a')
-      a.href = u; a.download = `mbg-project-${(d.project?.name || 'export').replace(/[<>:"/\\|?*\x00]/g, '_')}-${new Date().toISOString().slice(0, 10)}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(u), 1000)
+      downloadBlob(blob, `mbg-project-${(d.project?.name || 'export').replace(/[<>:"/\\|?*\x00]/g, '_')}-${new Date().toISOString().slice(0, 10)}.json`)
       toast('Project diunduh!', 'success')
     } catch { toast('Gagal export project', 'error') }
     finally { hideGlobalLoading() }
@@ -1629,7 +1617,7 @@ export default function MBGPage() {
       setShareCode(data.code)
       setShareTaskCount(data.taskCount)
     } catch { toast('Gagal share', 'error') }
-    finally { setShareLoading(false); hideGlobalLoading() }
+    finally { setShareLoading(false); hideGlobalLoading(); setConfirmData(null) }
   }
 
   const copyShareCode = () => {
@@ -1750,7 +1738,8 @@ export default function MBGPage() {
         fetchNotes()
         // Tampilkan help untuk user baru
         if (!localStorage.getItem('mbg_help_shown')) {
-          setTimeout(() => { setDialogType('help'); localStorage.setItem('mbg_help_shown', '1') }, 500)
+          const t = setTimeout(() => { setDialogType('help'); localStorage.setItem('mbg_help_shown', '1') }, 500)
+          miscTimeoutsRef.current.push(t)
         }
       } else {
         setAuthError(data.error || 'Login gagal')
@@ -1785,7 +1774,8 @@ export default function MBGPage() {
         fetchData(false, true)
         fetchNotes()
         // Tampilkan help untuk user baru (register selalu first time)
-        setTimeout(() => { setDialogType('help'); localStorage.setItem('mbg_help_shown', '1') }, 500)
+        const ht = setTimeout(() => { setDialogType('help'); localStorage.setItem('mbg_help_shown', '1') }, 500)
+        miscTimeoutsRef.current.push(ht)
       } else {
         setAuthError(data.error || 'Registrasi gagal')
       }
@@ -1818,7 +1808,8 @@ export default function MBGPage() {
   const toggleBlockUser = async (user: { id: string; username: string; isBlocked: boolean }) => {
     showGlobalLoading()
     try {
-      await api(`/api/admin/users/${user.id}`, jsonOpts('PUT', { isBlocked: !user.isBlocked }))
+      const res = await api(`/api/admin/users/${user.id}`, jsonOpts('PUT', { isBlocked: !user.isBlocked }))
+      if (!res.ok) { toast('Gagal mengubah status user', 'error'); return }
       toast(user.isBlocked ? `${user.username} di-unblock` : `${user.username} di-block`)
       fetchAdminData()
     } catch { toast('Gagal', 'error') }
@@ -1849,6 +1840,21 @@ export default function MBGPage() {
     } catch { toast('Gagal', 'error') }
     finally { hideGlobalLoading() }
   }
+
+  /* ===== Settings: extract DRY settings→form sync helper ===== */
+  const applySettingsToForm = useCallback((sd: Record<string, unknown>) => {
+    setFormTimezone(String(sd.timezone || 'WIB'))
+    setFormTimeFormat(sd.timeFormat === '12' ? '12' : '24')
+    setFormAutoExpandSiap(sd.autoExpandSiap !== false)
+    setFormAutoCompleteLink(sd.autoCompleteLink === true)
+    setFormTelegramNotif(sd.telegramNotifEnabled !== false)
+    setFormBrowserNotif(sd.browserNotifEnabled !== false)
+    setFormPomodoroDuration(Number(sd.pomodoroDuration) || 25)
+    setFormAudioAlertEnabled(sd.audioAlertEnabled !== false)
+    setTelegramLinked(!!sd.telegramChatId || !!sd.telegramId)
+    setTelegramName(String(sd.telegramName || ''))
+    setTelegramBotUsername(String(sd.telegramBotUsername || ''))
+  }, [])
 
   /* ===== Settings ===== */
   const saveSettings = async () => {
@@ -2102,15 +2108,10 @@ export default function MBGPage() {
   const resumePomodoro = () => {
     if (!pomodoroTaskId || pomodoroSeconds <= 0) return
     setPomodoroRunning(true)
-    pomodoroTimerRef.current = setInterval(() => {
-      setPomodoroSeconds(prev => {
-        if (prev <= 1) {
-          if (pomodoroTimerRef.current) { clearInterval(pomodoroTimerRef.current); pomodoroTimerRef.current = null }
-          return 0
-        }
-        return prev - 1
-      })
-    }, 1000)
+    // Reuse same timer logic as startPomodoro
+    startPomodoro(pomodoroTaskId)
+    // Reset seconds to current value (startPomodoro sets to pomodoroDuration)
+    setPomodoroSeconds(pomodoroSeconds)
   }
 
   const resetPomodoro = () => {
