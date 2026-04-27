@@ -356,6 +356,100 @@ export default function MBGPage() {
   const longPressTaskRef = useRef<Task | null>(null)
   const longPressProjectRef = useRef<Project | null>(null)
 
+  /* ===== Local Cache — instant load from localStorage ===== */
+  const CACHE_KEY = 'mbg_cache'
+  const CACHE_VERSION = 3
+  const cacheLoadRef = useRef(false) // Track if we loaded from cache this session
+
+  // Refs to track latest state for cache writes (avoids stale closures)
+  const tasksCacheRef = useRef<Task[]>([])
+  const projectsCacheRef = useRef<Project[]>([])
+  const notesCacheRef = useRef<Note[]>([])
+  const templatesCacheRef = useRef<TaskTemplate[]>([])
+  const settingsCacheRef = useRef<Settings>({})
+
+  // Load data from localStorage cache (instant, 0ms)
+  const loadFromCache = useCallback(() => {
+    if (typeof window === 'undefined') return false
+    try {
+      const raw = localStorage.getItem(CACHE_KEY)
+      if (!raw) return false
+      const cache = JSON.parse(raw)
+      if (cache.v !== CACHE_VERSION || !cache.ts) return false
+      // Cache older than 24h is considered stale — skip
+      if (Date.now() - cache.ts > 86400000) return false
+      if (cache.tasks) {
+        const mapped = (cache.tasks as Task[]).map((t: Task) => ({
+          ...t,
+          cooldownMs: t.nextReadyAt ? Math.max(0, new Date(t.nextReadyAt).getTime() - Date.now()) : 0
+        }))
+        tasksCacheRef.current = mapped
+        setTasks(mapped)
+      }
+      if (cache.projects) {
+        projectsCacheRef.current = cache.projects as Project[]
+        setProjects(projectsCacheRef.current)
+      }
+      if (cache.notes) {
+        notesCacheRef.current = cache.notes as Note[]
+        setNotes(notesCacheRef.current)
+      }
+      if (cache.templates) {
+        templatesCacheRef.current = cache.templates as TaskTemplate[]
+        setTemplates(templatesCacheRef.current)
+      }
+      if (cache.settings) {
+        settingsCacheRef.current = cache.settings as Settings
+        setSettings(settingsCacheRef.current)
+        const sd = cache.settings as Record<string, unknown>
+        setFormTimezone(String(sd.timezone || 'WIB'))
+        setFormTimeFormat(sd.timeFormat === '12' ? '12' : '24')
+        setFormAutoExpandSiap(sd.autoExpandSiap !== false)
+        setFormAutoCompleteLink(sd.autoCompleteLink === true)
+        setFormTelegramNotif(sd.telegramNotifEnabled !== false)
+        setFormBrowserNotif(sd.browserNotifEnabled !== false)
+        setFormPomodoroDuration(Number(sd.pomodoroDuration) || 25)
+        setFormAudioAlertEnabled(sd.audioAlertEnabled !== false)
+        setTelegramLinked(!!sd.telegramChatId || !!sd.telegramId)
+        setTelegramName(String(sd.telegramName || ''))
+        setTelegramBotUsername(String(sd.telegramBotUsername || ''))
+      }
+      return true
+    } catch { return false }
+  }, [])
+
+  // Save current state to localStorage cache (debounced via rAF)
+  const saveToCacheRaf = useRef(0)
+  const saveToCache = useCallback(() => {
+    if (typeof window === 'undefined') return
+    try {
+      cancelAnimationFrame(saveToCacheRaf.current)
+      saveToCacheRaf.current = requestAnimationFrame(() => {
+        localStorage.setItem(CACHE_KEY, JSON.stringify({
+          v: CACHE_VERSION,
+          ts: Date.now(),
+          tasks: tasksCacheRef.current,
+          projects: projectsCacheRef.current,
+          notes: notesCacheRef.current,
+          templates: templatesCacheRef.current,
+          settings: settingsCacheRef.current
+        }))
+      })
+    } catch { /* storage full or disabled */ }
+  }, [])
+
+  /* ===== Request Deduplication — prevent duplicate concurrent requests ===== */
+  const pendingRequests = useRef<Map<string, Promise<unknown>>>(new Map())
+
+  const dedupedFetch = useCallback((url: string, opts?: RequestInit): Promise<Response> => {
+    const key = `${opts?.method || 'GET'}:${url}`
+    const pending = pendingRequests.current.get(key)
+    if (pending) return pending as Promise<Response>
+    const p = fetch(url, opts).finally(() => { pendingRequests.current.delete(key) })
+    pendingRequests.current.set(key, p)
+    return p
+  }, [])
+
   /* ===== Data ===== */
   // Cookie-only auth
   const getAuthHeaders = () => {
@@ -433,6 +527,15 @@ export default function MBGPage() {
       initialExpandDone.current = false
     }
     try {
+      // STEP 0: Load from cache FIRST (instant — 0ms)
+      if (!cacheLoadRef.current && !isManualRefresh) {
+        const loaded = loadFromCache()
+        if (loaded) {
+          cacheLoadRef.current = true
+          setLoading(false) // Show cached data immediately!
+        }
+      }
+
       const controller = new AbortController()
       const signal = controller.signal
       const timeout = setTimeout(() => controller.abort(), 20000)
@@ -445,10 +548,14 @@ export default function MBGPage() {
       }
 
       // STEP 2: Fetch all data in ONE request (avoids multiple Vercel cold starts)
-      const res = await fetch('/api/init', fetchOpts(signal)).catch(() => null)
+      const res = await dedupedFetch('/api/init', fetchOpts(signal)).catch(() => null)
       clearTimeout(timeout)
 
-      if (!res) return // Server unreachable
+      if (!res) {
+        // Server unreachable but we have cache — stay with cache
+        if (cacheLoadRef.current) return
+        return
+      }
 
       // 401 = blocked/expired — handle auth rejection
       if (res.status === 401) {
@@ -476,36 +583,50 @@ export default function MBGPage() {
       const shouldUpdateData = timeSinceWrite > SKIP_FETCH_AFTER_WRITE_MS || timeSinceWrite < 0
 
       if (shouldUpdateData) {
-        setTasks(Array.isArray(data.tasks) ? (data.tasks as Task[]).map((t: Task) => ({
+        const newTasks = Array.isArray(data.tasks) ? (data.tasks as Task[]).map((t: Task) => ({
           ...t,
           cooldownMs: t.nextReadyAt ? Math.max(0, new Date(t.nextReadyAt).getTime() - Date.now()) : 0
-        })) : [])
-        setProjects(Array.isArray(data.projects) ? data.projects as Project[] : [])
-      }
+        })) : []
+        const newProjects = Array.isArray(data.projects) ? data.projects as Project[] : []
+        const newNotes = Array.isArray(data.notes) ? data.notes : []
+        const newTemplates = Array.isArray(data.templates) ? data.templates : []
+        const newSettings = data.settings && typeof data.settings === 'object' ? data.settings as Settings : {}
 
-      // Always update notes and templates (no optimistic writes for these)
-      setNotes(Array.isArray(data.notes) ? data.notes : [])
-      setTemplates(Array.isArray(data.templates) ? data.templates : [])
+        // Update refs first (for cache)
+        tasksCacheRef.current = newTasks
+        projectsCacheRef.current = newProjects
+        notesCacheRef.current = newNotes
+        templatesCacheRef.current = newTemplates
+        settingsCacheRef.current = newSettings
 
-      const sd = (typeof data.settings === 'object' && !Array.isArray(data.settings)) ? data.settings as Record<string, unknown> : {}
-      setSettings(data.settings && typeof data.settings === 'object' ? data.settings as Settings : {})
-      setFormTimezone(String(sd.timezone || 'WIB'))
-      setFormTimeFormat(sd.timeFormat === '12' ? '12' : '24')
-      setFormAutoExpandSiap(sd.autoExpandSiap !== false)
-      setFormAutoCompleteLink(sd.autoCompleteLink === true)
-      setFormTelegramNotif(sd.telegramNotifEnabled !== false)
-      setFormBrowserNotif(sd.browserNotifEnabled !== false)
-      setFormPomodoroDuration(Number(sd.pomodoroDuration) || 25)
-      setFormAudioAlertEnabled(sd.audioAlertEnabled !== false)
-      setTelegramLinked(!!sd.telegramChatId)
-      setTelegramName(String(sd.telegramName || ''))
-      setTelegramBotUsername(String(sd.telegramBotUsername || ''))
-      if (!sd.telegramChatId && sd.telegramId) {
-        setTelegramLinked(true)
+        setTasks(newTasks)
+        setProjects(newProjects)
+        setNotes(newNotes)
+        setTemplates(newTemplates)
+
+        const sd = (typeof data.settings === 'object' && !Array.isArray(data.settings)) ? data.settings as Record<string, unknown> : {}
+        setSettings(newSettings)
+        setFormTimezone(String(sd.timezone || 'WIB'))
+        setFormTimeFormat(sd.timeFormat === '12' ? '12' : '24')
+        setFormAutoExpandSiap(sd.autoExpandSiap !== false)
+        setFormAutoCompleteLink(sd.autoCompleteLink === true)
+        setFormTelegramNotif(sd.telegramNotifEnabled !== false)
+        setFormBrowserNotif(sd.browserNotifEnabled !== false)
+        setFormPomodoroDuration(Number(sd.pomodoroDuration) || 25)
+        setFormAudioAlertEnabled(sd.audioAlertEnabled !== false)
+        setTelegramLinked(!!sd.telegramChatId)
+        setTelegramName(String(sd.telegramName || ''))
+        setTelegramBotUsername(String(sd.telegramBotUsername || ''))
+        if (!sd.telegramChatId && sd.telegramId) {
+          setTelegramLinked(true)
+        }
+
+        // Save to cache after successful fetch
+        saveToCache()
       }
     } catch (e) { console.error('fetchData error:', e) }
     finally { setLoading(false) }
-  }, [ensureIdentified])
+  }, [ensureIdentified, loadFromCache, saveToCache, dedupedFetch])
 
   const fetchNotes = useCallback(async () => {
     try {
@@ -545,6 +666,13 @@ export default function MBGPage() {
     const i = setInterval(() => fetchDataRef.current(false, true), 30000)
     return () => clearInterval(i)
   }, [])
+
+  // Periodic cache save — capture optimistic mutations between server syncs
+  useEffect(() => {
+    if (!authenticated) return
+    const i = setInterval(() => saveToCache(), 10000) // Save cache every 10s
+    return () => clearInterval(i)
+  }, [authenticated, saveToCache])
 
   // Scheduler: panggil /api/notify/run setiap 30 detik untuk Telegram notif
   useEffect(() => {
@@ -753,11 +881,11 @@ export default function MBGPage() {
   const fetchTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([])
   // Track last optimistic write time — prevent stale fetch from overwriting optimistic state
   const lastWriteTime = useRef(0)
-  const SKIP_FETCH_AFTER_WRITE_MS = 4000 // Don't overwrite tasks/projects within 4s of a write
+  const SKIP_FETCH_AFTER_WRITE_MS = 8000 // Increased: Don't overwrite tasks/projects within 8s of a write (was 4s)
 
-  // Helper: delayed fetch with cleanup tracking
+  // Helper: delayed fetch with cleanup tracking + save to local cache
   const delayedFetch = useCallback(() => {
-    const t = setTimeout(() => fetchData(false, true), 3000)
+    const t = setTimeout(() => fetchData(false, true), 5000) // Increased from 3s to 5s — less aggressive fetching
     fetchTimeoutsRef.current.push(t)
   }, [fetchData])
 
@@ -772,6 +900,13 @@ export default function MBGPage() {
       fetchTimeoutsRef.current.forEach(t => clearTimeout(t))
     }
   }, [])
+
+  // Sync React state → cache refs (so optimistic mutations get cached too)
+  useEffect(() => { tasksCacheRef.current = tasks }, [tasks])
+  useEffect(() => { projectsCacheRef.current = projects }, [projects])
+  useEffect(() => { notesCacheRef.current = notes }, [notes])
+  useEffect(() => { templatesCacheRef.current = templates }, [templates])
+  useEffect(() => { settingsCacheRef.current = settings }, [settings])
 
   const toast = (msg: string, type: 'success' | 'error' | 'info' = 'info') => {
     const id = Date.now() + Math.random()
