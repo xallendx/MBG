@@ -1973,20 +1973,16 @@ export default function MBGPage() {
               <button className="win95-btn" onClick={openAddStandalone}>📌 Task Baru</button>
             </div>
           </div>
-        ) : visibleCount === 0 && !dashFilterQuery ? (
-          <div className="empty-state" style={{ padding: 40 }}>
-            <div className="icon">📭</div>
-            <div style={{ fontWeight: 'bold' }}>Tidak ada task {filterLabel}</div>
-          </div>
-        ) : visibleCount === 0 ? (
-          <div className="empty-state" style={{ padding: 20 }}>
-            <div className="icon">🔍</div>
-            <div style={{ fontWeight: 'bold' }}>Tidak ada yang cocok</div>
-            <div style={{ fontSize: 10, color: '#808080' }}>Coba ubah filter atau kata kunci</div>
-          </div>
         ) : (
           <>
+            {/* Always show project folders even when they have 0 tasks */}
             {filteredProjects.map(renderFolder)}
+            {/* Show "no tasks" message below folders if no tasks found */}
+            {visibleCount === 0 && !dashFilterQuery && filteredProjects.length > 0 && (
+              <div className="empty-state" style={{ padding: '8px 16px' }}>
+                <div style={{ fontSize: 10, color: '#808080' }}>📭 Tidak ada task {filterLabel} — klik + pada folder untuk menambahkan</div>
+              </div>
+            )}
             {/* Folder for tasks without project */}
             {showNoProj && (() => {
               const noProjTasks = tasks.filter(t => !t.project)
@@ -2410,14 +2406,15 @@ export default function MBGPage() {
                 Contoh project: LayerZero, Grass, Polymarket, dll
               </div>
             </div>
-          ) : showEmptyState ? (
-            <div className="empty-state" style={{ padding: 40 }}>
-              <div className="icon">📭</div>
-              <div style={{ fontWeight: 'bold' }}>Tidak ada task {filterLabel}</div>
-            </div>
           ) : (
             <>
               {sortedProjects.map(renderFolder)}
+              {/* Show hint when all folders are empty */}
+              {showEmptyState && (
+                <div className="empty-state" style={{ padding: '8px 16px' }}>
+                  <div style={{ fontSize: 10, color: '#808080' }}>📭 Tidak ada task {filterLabel} — klik + pada folder untuk menambahkan</div>
+                </div>
+              )}
               {/* Folder for tasks without project */}
               {(() => {
                 const noProjTasks = tasks.filter(t => !t.project)
