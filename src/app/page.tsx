@@ -2653,7 +2653,7 @@ export default function MBGPage() {
         </div>
 
         {/* ===== MAIN CONTENT: Tree / Dashboard / Monitor ===== */}
-        <div className="win95-content" style={{ maxHeight: 'calc(100vh - 210px)', overflowY: 'auto' }}>
+        <div className="win95-content">
           {viewMode === 'dashboard' ? renderDashboard() : viewMode === 'monitor' ? renderMonitor() : projects.length === 0 ? (
             <div className="empty-state" style={{ padding: 40 }}>
               <div className="icon">📂</div>
