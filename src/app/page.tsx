@@ -79,6 +79,7 @@ export default function MBGPage() {
   const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({})
   const [openMenu, setOpenMenu] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
   const [completingIds, setCompletingIds] = useState<Set<string>>(new Set())
 
   // Admin Panel State
@@ -325,8 +326,14 @@ export default function MBGPage() {
     } catch { /* fallback: do nothing */ }
   }, [notifPermission])
 
-  // Fix #12: Current time in status bar
-  const [currentTime, setCurrentTime] = useState('')
+  // Clock — use ref + direct DOM manipulation to avoid React re-renders every second
+  const clockRef = useRef<HTMLElement | null>(null)
+
+  // Debounce search — avoid re-filtering on every keystroke
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(searchQuery), 200)
+    return () => clearTimeout(t)
+  }, [searchQuery])
 
   // Flag to prevent detail opening right after context menu
   const ctxOpenTimeRef = useRef(0)
@@ -668,25 +675,31 @@ export default function MBGPage() {
     })
   }, [loading, projects, tasks, settings.autoExpandSiap])
 
-  /* ===== Fix #2: Cooldown timer with seconds for <1hr, 5s tick ===== */
+  /* ===== Cooldown timer — skip re-render if nothing changed ===== */
   useEffect(() => {
     const tick = setInterval(() => {
-      setTasks(prev => prev.map(t => {
-        if (t.status !== 'cooldown' || !t.nextReadyAt) return t
-        const ms = Math.max(0, new Date(t.nextReadyAt).getTime() - Date.now())
-        if (ms <= 0) return { ...t, cooldownRemaining: '', cooldownMs: 0 }
-        const h = Math.floor(ms / 3600000), m = Math.floor((ms % 3600000) / 60000), s = Math.floor((ms % 60000) / 1000)
-        let text = ''
-        if (h >= 1) {
-          text = `${h}j ${m}m`
-        } else if (m >= 1) {
-          text = `${m}m ${s}s`
-        } else {
-          text = `${s}s`
-        }
-        return { ...t, cooldownRemaining: text, cooldownMs: ms }
-      }))
-    }, 5000) // Fix #2: 5 second interval
+      setTasks(prev => {
+        let changed = false
+        const next = prev.map(t => {
+          if (t.status !== 'cooldown' || !t.nextReadyAt) return t
+          const ms = Math.max(0, new Date(t.nextReadyAt).getTime() - Date.now())
+          if (ms <= 0) {
+            if (t.cooldownMs === 0 && t.cooldownRemaining === '') return t
+            changed = true
+            return { ...t, cooldownRemaining: '', cooldownMs: 0, status: 'siap' as const }
+          }
+          const h = Math.floor(ms / 3600000), m = Math.floor((ms % 3600000) / 60000), s = Math.floor((ms % 60000) / 1000)
+          let text = ''
+          if (h >= 1) text = `${h}j ${m}m`
+          else if (m >= 1) text = `${m}m ${s}s`
+          else text = `${s}s`
+          if (t.cooldownRemaining === text && t.cooldownMs === ms) return t
+          changed = true
+          return { ...t, cooldownRemaining: text, cooldownMs: ms }
+        })
+        return changed ? next : prev
+      })
+    }, 5000)
     return () => clearInterval(tick)
   }, [])
 
@@ -706,18 +719,20 @@ export default function MBGPage() {
   const fmtDate = (d: Date) => d.toLocaleString('id-ID', { day: '2-digit', month: 'short', ...timeOpts })
   const fmtFull = (d: Date) => d.toLocaleString('id-ID', { day: '2-digit', month: '2-digit', year: 'numeric', ...timeOpts })
 
-  /* ===== Fix #12: Current time ticker with 12/24 format ===== */
+  /* ===== Clock: direct DOM — no React re-render every second ===== */
   useEffect(() => {
     const update = () => {
-      const opts = formTimeFormat === '12'
+      if (!clockRef.current) return
+      const fmt = clockRef.current.dataset.fmt || '24'
+      const opts = fmt === '12'
         ? { hour: '2-digit' as const, minute: '2-digit' as const, hour12: true as const }
         : { hour: '2-digit' as const, minute: '2-digit' as const, hour12: false as const }
-      setCurrentTime(new Date().toLocaleTimeString('id-ID', opts))
+      clockRef.current.childNodes[1].textContent = ' ' + new Date().toLocaleTimeString('id-ID', opts)
     }
     update()
     const i = setInterval(update, 1000)
     return () => clearInterval(i)
-  }, [formTimeFormat])
+  }, [])
 
   const toastTimersRef = useRef<ReturnType<typeof setTimeout>[]>([])
   const fetchTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([])
@@ -1691,8 +1706,8 @@ export default function MBGPage() {
     const base = activeTab === 'selesai' ? pt : getActiveTasks(pt)
     return base.filter(t => {
       if (activeTab !== 'all' && t.status !== activeTab) return false
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase()
+      if (debouncedSearch.trim()) {
+        const q = debouncedSearch.toLowerCase()
         return t.name.toLowerCase().includes(q) || t.description?.toLowerCase().includes(q) || t.notes?.toLowerCase().includes(q) || projectName.toLowerCase().includes(q)
       }
       return true
@@ -1761,9 +1776,9 @@ export default function MBGPage() {
   /* ===== Fix #6: Pinned tasks sort first in status groups ===== */
   const renderStatusGroup = (title: string, list: Task[], key: string, color: string) => {
     if (activeTab !== 'all' && activeTab !== key) return null
-    if (list.length === 0 && !searchQuery) return null
+    if (list.length === 0 && !debouncedSearch) return null
     // When searching and no matches, hide empty groups
-    if (list.length === 0 && searchQuery) return null
+    if (list.length === 0 && debouncedSearch) return null
     const col = collapsedSections[key]
     const sortedList = sortTasksByPriorityAndPin(list)
     return (
@@ -1795,10 +1810,10 @@ export default function MBGPage() {
     const fDone = filtered.filter(t => t.status === 'selesai')
 
     // When searching, force expand all matching folders
-    const shouldExpand = searchQuery.trim() ? filtered.length > 0 : isExpanded
+    const shouldExpand = debouncedSearch.trim() ? filtered.length > 0 : isExpanded
 
     /* Fix #4: hide folder if searching and no match */
-    if (searchQuery.trim() && filtered.length === 0) return null
+    if (debouncedSearch.trim() && filtered.length === 0) return null
 
     return (
       <div key={p.id} className="tree-folder">
@@ -2279,9 +2294,7 @@ export default function MBGPage() {
   const activeTasks = getActiveTasks(tasks)
   const totalSiap = activeTasks.filter(t => t.status === 'siap').length
   const totalCd = activeTasks.filter(t => t.status === 'cooldown').length
-  // totalDone includes archived sekali for Done tab badge & dashboard stat card
   const totalDone = tasks.filter(t => t.status === 'selesai').length
-  // activeDone excludes archived sekali for progress calculations
   const activeDone = activeTasks.filter(t => t.status === 'selesai').length
   const totalArchived = tasks.filter(t => t.status === 'selesai' && (t.scheduleType === 'sekali' || t.scheduleType === 'tanggal_spesifik')).length
   const addDialogProject = projects.find(p => p.id === formProjectId)
@@ -2293,7 +2306,7 @@ export default function MBGPage() {
   })
 
   // Only show global empty state when a specific filter is active and no matches
-  const showEmptyState = activeTab !== 'all' && !hasAnyContent && !searchQuery
+  const showEmptyState = activeTab !== 'all' && !hasAnyContent && !debouncedSearch
   const filterLabel = activeTab === 'siap' ? 'siap' : activeTab === 'cooldown' ? 'cooldown' : activeTab === 'selesai' ? 'selesai' : ''
 
   return (
@@ -2429,8 +2442,8 @@ export default function MBGPage() {
                 const fSiap = filtered.filter(t => t.status === 'siap')
                 const fCd = filtered.filter(t => t.status === 'cooldown')
                 const fDone = filtered.filter(t => t.status === 'selesai')
-                if (searchQuery.trim() && filtered.length === 0) return null
-                const shouldExpand = searchQuery.trim() ? filtered.length > 0 : (savedExpanded || searchQuery.trim())
+                if (debouncedSearch.trim() && filtered.length === 0) return null
+                const shouldExpand = debouncedSearch.trim() ? filtered.length > 0 : (savedExpanded || debouncedSearch.trim())
                 return (
                   <div key="__no_project__" className="tree-folder">
                     <div className="tree-folder-header">
@@ -2473,7 +2486,7 @@ export default function MBGPage() {
         {/* Status bar */}
         <div className="win95-statusbar">
           <div className="win95-statusbar-section">{projects.length} folder, {activeTasks.length} aktif{totalArchived > 0 && <span style={{ color: '#808080' }}> (+{totalArchived} arsip)</span>}{searchQuery && <span style={{ color: '#000080' }}> | Cari...</span>}</div>
-          {currentTime && <div className="win95-statusbar-section fixed" title="Jam saat ini">🕐 {currentTime}</div>}
+          <span ref={clockRef} className="win95-statusbar-section fixed" title="Jam saat ini" data-fmt={settings.timeFormat || '24'}>🕐 </span>
           {telegramLinked && <div className="win95-statusbar-section fixed" title="Telegram">📱</div>}
           <div className="win95-statusbar-section fixed">{settings.timezone || 'WIB'}</div>
         </div>
