@@ -204,14 +204,118 @@ export default function MBGPage() {
   const [authLoading, setAuthLoading] = useState(false)
   const [authError, setAuthError] = useState('')
 
-  // Browser notifications
+  // Browser & Push notifications
   const prevTasksRef = useRef<Map<string, { status: string; cooldownMs: number }>>(new Map())
   const [notifPermission, setNotifPermission] = useState<NotificationPermission>(typeof Notification !== 'undefined' ? Notification.permission : 'denied')
+  const [pushSupported, setPushSupported] = useState(false)
+  const [pushEnabled, setPushEnabled] = useState(false)
+
+  // Register Service Worker + Push subscription
+  const registerPushSubscription = useCallback(async (userId: string) => {
+    try {
+      if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+        setPushSupported(false)
+        return
+      }
+      setPushSupported(true)
+
+      // Register SW
+      const registration = await navigator.serviceWorker.register('/sw.js')
+      await navigator.serviceWorker.ready
+
+      // Check existing subscription
+      const existingSub = await registration.pushManager.getSubscription()
+
+      if (existingSub) {
+        setPushEnabled(true)
+        // Sync subscription to server
+        const subData = existingSub.toJSON()
+        if (subData.keys) {
+          await fetch('/api/push/subscribe', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ endpoint: existingSub.endpoint, keys: subData.keys })
+          })
+        }
+        return
+      }
+
+      // Get VAPID public key
+      const vapidRes = await fetch('/api/push/vapid-key', { credentials: 'include' })
+      if (!vapidRes.ok) return
+      const { publicKey } = await vapidRes.json()
+      if (!publicKey) return
+
+      // Request notification permission first
+      const perm = await Notification.requestPermission()
+      setNotifPermission(perm)
+      if (perm !== 'granted') return
+
+      // Subscribe to push
+      const subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(publicKey)
+      })
+
+      // Save to server
+      const subData = subscription.toJSON()
+      if (subData.keys) {
+        await fetch('/api/push/subscribe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ endpoint: subscription.endpoint, keys: subData.keys })
+        })
+      }
+      setPushEnabled(true)
+    } catch (err) {
+      console.error('Push registration failed:', err)
+      setPushSupported(false)
+    }
+  }, [])
+
+  // Unsubscribe from push
+  const unregisterPushSubscription = useCallback(async () => {
+    try {
+      const registration = await navigator.serviceWorker.ready
+      const subscription = await registration.pushManager.getSubscription()
+      if (subscription) {
+        await subscription.unsubscribe()
+        const subData = subscription.toJSON()
+        await fetch('/api/push/subscribe', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ endpoint: subscription.endpoint })
+        })
+      }
+      setPushEnabled(false)
+    } catch {
+      // ignore
+    }
+  }, [])
+
+  // Base64 URL to Uint8Array (for VAPID key)
+  function urlBase64ToUint8Array(base64String: string) {
+    const padding = '='.repeat((4 - base64String.length % 4) % 4)
+    const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/')
+    const rawData = window.atob(base64)
+    const outputArray = new Uint8Array(rawData.length)
+    for (let i = 0; i < rawData.length; ++i) {
+      outputArray[i] = rawData.charCodeAt(i)
+    }
+    return outputArray
+  }
 
   const requestNotifPermission = async () => {
     if (typeof Notification === 'undefined') return
     const perm = await Notification.requestPermission()
     setNotifPermission(perm)
+    // After granting permission, try to register push
+    if (perm === 'granted' && authUser?.id) {
+      registerPushSubscription(authUser.id)
+    }
   }
 
   const sendBrowserNotif = useCallback((title: string, body: string) => {
@@ -396,7 +500,12 @@ export default function MBGPage() {
     } catch { /* silent */ }
   }, [])
 
-  useEffect(() => { fetchData(); fetchNotes(); fetchTemplates(); const i = setInterval(() => fetchData(false, true), 30000); return () => clearInterval(i) }, [fetchData, fetchNotes, fetchTemplates])
+  useEffect(() => {
+    fetchData(); fetchNotes(); fetchTemplates();
+    // Register push notifications on first load
+    if (authUser?.id) registerPushSubscription(authUser.id)
+    const i = setInterval(() => fetchData(false, true), 30000); return () => clearInterval(i)
+  }, [fetchData, fetchNotes, fetchTemplates, authUser?.id, registerPushSubscription])
 
   // Scheduler: panggil /api/notify/run setiap 30 detik untuk Telegram notif
   useEffect(() => {
@@ -2436,11 +2545,18 @@ export default function MBGPage() {
                   <div style={{ fontSize: 10, color: '#808080', marginLeft: 20 }}>Kirim notif ke Telegram 2 menit sebelum & saat task siap</div>
                   <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', marginTop: 4 }}>
                     <input type="checkbox" className="task-checkbox" checked={formBrowserNotif} onChange={e => { setFormBrowserNotif(e.target.checked); if (e.target.checked) requestNotifPermission() }} />
-                    <span><b>Browser</b> notifikasi</span>
+                    <span><b>🔔 Push Notifikasi</b> (seperti Discord)</span>
                   </label>
-                  <div style={{ fontSize: 10, color: '#808080', marginLeft: 20 }}>Tampilkan notifikasi di browser saat task siap</div>
+                  <div style={{ fontSize: 10, color: '#808080', marginLeft: 20 }}>Notif muncul di pojok kanan bawah walau app sedang dibuka app lain</div>
                   {notifPermission !== 'granted' && formBrowserNotif && (
                     <div style={{ fontSize: 10, color: '#cc0000', marginLeft: 20, marginTop: 2 }}>Izin browser dibutuhkan. Klik checkbox untuk mengizinkan.</div>
+                  )}
+                  {notifPermission === 'granted' && (
+                    <div style={{ fontSize: 10, color: '#008000', marginLeft: 20, marginTop: 2 }}>
+                      {pushEnabled ? '✅ Push aktif — notif akan muncul walau app ditutup' :
+                        pushSupported ? '⏳ Mendaftarkan push notification...' :
+                        '⚠️ Browser tidak mendukung push. Gunakan Chrome/Edge.'}
+                    </div>
                   )}
                   {/* Feature 5: Audio alert toggle */}
                   <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', marginTop: 4 }}>

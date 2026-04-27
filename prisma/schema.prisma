@@ -108,3 +108,11 @@ model TaskTemplate {
   updatedAt      DateTime @updatedAt
   user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
+
+model PushSubscription {
+  id        String   @id @default(cuid())
+  userId    String
+  endpoint  String   @unique
+  keys      String   // JSON: { auth, p256dh }
+  createdAt DateTime @default(now())
+}

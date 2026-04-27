@@ -3,13 +3,60 @@ import { db } from '@/lib/db'
 import { sendTelegramMessage } from '@/lib/telegram'
 import { getNextReadyAt } from '@/lib/schedule'
 import { getCurrentUser } from '@/lib/auth'
+import webpush from 'web-push'
+
+// Configure VAPID
+const VAPID_PUBLIC = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || ''
+const VAPID_PRIVATE = process.env.VAPID_PRIVATE_KEY || ''
+const VAPID_SUBJECT = process.env.VAPID_SUBJECT || 'mailto:admin@mbg.app'
+
+if (VAPID_PUBLIC && VAPID_PRIVATE) {
+  webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC, VAPID_PRIVATE)
+}
 
 function escHtml(s: string) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
+// Helper: send web push notification
+async function sendWebPush(userId: string, title: string, body: string, tag: string) {
+  if (!VAPID_PUBLIC || !VAPID_PRIVATE) return false
+
+  try {
+    const subscriptions = await db.pushSubscription.findMany({
+      where: { userId }
+    })
+
+    if (subscriptions.length === 0) return false
+
+    let sent = 0
+    for (const sub of subscriptions) {
+      try {
+        const keys = JSON.parse(sub.keys)
+        const pushSubscription = {
+          endpoint: sub.endpoint,
+          keys: { auth: keys.auth, p256dh: keys.p256dh }
+        }
+        await webpush.sendNotification(pushSubscription, JSON.stringify({ title, body, tag, url: '/' }), {
+          TTL: 60, // 60 seconds
+          urgency: 'normal'
+        })
+        sent++
+      } catch (err) {
+        // If subscription is invalid/expired, remove it
+        if (err instanceof Error && (err as Error & { statusCode?: number }).statusCode === 410) {
+          await db.pushSubscription.delete({ where: { id: sub.id } })
+        }
+      }
+    }
+    return sent > 0
+  } catch {
+    return false
+  }
+}
+
 // POST /api/notify/run — dipanggil oleh frontend setiap 30 detik
-// Cek task user saat ini yang punya Telegram, kirim notif jika perlu
+// Cek task user saat ini yang punya Telegram/Push, kirim notif jika perlu
 export async function POST() {
   try {
     const currentUser = await getCurrentUser()
@@ -30,11 +77,11 @@ export async function POST() {
     let settings: Record<string, unknown>
     try { settings = JSON.parse(user.settings) } catch { return NextResponse.json({ success: true, sent: 0, errors: 0 }) }
 
-    const telegramChatId = settings.telegramChatId
-    if (!telegramChatId) return NextResponse.json({ success: true, sent: 0, errors: 0 })
+    // Check if ANY notification channel is enabled
+    const telegramEnabled = settings.telegramNotifEnabled !== false && !!settings.telegramChatId
+    const pushEnabled = settings.browserNotifEnabled !== false // default enabled
 
-    // Check if user enabled Telegram notifications (default: enabled)
-    if (settings.telegramNotifEnabled === false) return NextResponse.json({ success: true, sent: 0, errors: 0 })
+    if (!telegramEnabled && !pushEnabled) return NextResponse.json({ success: true, sent: 0, errors: 0 })
 
     // Get all tasks for this user that are in cooldown (have logs, scheduleType not sekali)
     const tasks = await db.task.findMany({
@@ -66,43 +113,69 @@ export async function POST() {
         if (minutesLeft >= 1) timeText = `${minutesLeft} menit`
         else timeText = `${secondsLeft} detik`
 
-        try {
-          await sendTelegramMessage(
-            telegramChatId as string | number,
-            `⏰ <b>Hampir Siap!</b>\n\n` +
-            `📋 ${taskLabel}\n` +
-            `⏱ Siap dalam: ${timeText}\n` +
-            `👤 ${displayName}`,
-            'HTML'
-          )
-          await db.task.update({
-            where: { id: task.id },
-            data: { notifiedWarnAt: new Date() }
-          })
-          sentCount++
-        } catch {
-          errorCount++
+        // Telegram notification
+        if (telegramEnabled) {
+          try {
+            await sendTelegramMessage(
+              settings.telegramChatId as string | number,
+              `⏰ <b>Hampir Siap!</b>\n\n` +
+              `📋 ${taskLabel}\n` +
+              `⏱ Siap dalam: ${timeText}\n` +
+              `👤 ${displayName}`,
+              'HTML'
+            )
+          } catch {
+            errorCount++
+          }
         }
+
+        // Web Push notification
+        if (pushEnabled) {
+          try {
+            await sendWebPush(user.id, `⏰ ${task.name}`, `Siap dalam ${timeText}`, `warn-${task.id}`)
+          } catch {
+            errorCount++
+          }
+        }
+
+        await db.task.update({
+          where: { id: task.id },
+          data: { notifiedWarnAt: new Date() }
+        })
+        sentCount++
       }
 
       // ---- Notif saat task sudah siap ----
       if (msUntilReady <= 0 && !task.notifiedReadyAt) {
-        try {
-          await sendTelegramMessage(
-            telegramChatId as string | number,
-            `✅ <b>Task Siap Dikerjakan!</b>\n\n` +
-            `📋 ${taskLabel}\n` +
-            `👤 ${displayName}`,
-            'HTML'
-          )
-          await db.task.update({
-            where: { id: task.id },
-            data: { notifiedReadyAt: new Date() }
-          })
-          sentCount++
-        } catch {
-          errorCount++
+        // Telegram notification
+        if (telegramEnabled) {
+          try {
+            await sendTelegramMessage(
+              settings.telegramChatId as string | number,
+              `✅ <b>Task Siap Dikerjakan!</b>\n\n` +
+              `📋 ${taskLabel}\n` +
+              `👤 ${displayName}`,
+              'HTML'
+            )
+          } catch {
+            errorCount++
+          }
         }
+
+        // Web Push notification
+        if (pushEnabled) {
+          try {
+            await sendWebPush(user.id, `✅ ${task.name}`, 'Task siap dikerjakan!', `ready-${task.id}`)
+          } catch {
+            errorCount++
+          }
+        }
+
+        await db.task.update({
+          where: { id: task.id },
+          data: { notifiedReadyAt: new Date() }
+        })
+        sentCount++
       }
     }
 
