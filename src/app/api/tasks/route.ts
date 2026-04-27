@@ -67,8 +67,9 @@ export async function GET() {
     })
 
     return NextResponse.json(sorted)
-  } catch {
-    return NextResponse.json({ error: 'Request failed' }, { status: 500 })
+  } catch (e) {
+    console.error('[GET /api/tasks]', e)
+    return NextResponse.json({ error: 'Request failed', detail: e instanceof Error ? e.message : String(e) }, { status: 500 })
   }
 }
 
@@ -134,7 +135,8 @@ export async function POST(req: NextRequest) {
     })
 
     return NextResponse.json(task, { status: 201 })
-  } catch {
-    return NextResponse.json({ error: 'Request failed' }, { status: 500 })
+  } catch (e) {
+    console.error('[POST /api/tasks]', e)
+    return NextResponse.json({ error: 'Request failed', detail: e instanceof Error ? e.message : String(e) }, { status: 500 })
   }
 }
