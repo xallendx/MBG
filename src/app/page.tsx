@@ -1059,7 +1059,7 @@ export default function MBGPage() {
   const reset = (id: string) => {
     setConfirmData({
       title: 'Reset Task', message: 'Yakin reset task ini? Log terakhir akan dihapus dan cooldown dimulai ulang.',
-      onConfirm: async () => { await resetTask(id); setConfirmData(null) }
+      onConfirm: async () => { setConfirmData(null); await resetTask(id) }
     })
   }
 
@@ -1067,17 +1067,17 @@ export default function MBGPage() {
     setConfirmData({
       title: 'Hapus Task', message: 'Yakin hapus task ini? Log juga ikut terhapus.',
       onConfirm: async () => {
-        // Optimistic delete FIRST — prevent sync from re-adding it
+        // Close dialog FIRST — user can see the change immediately
+        setConfirmData(null)
+        // Optimistic delete — prevent sync from re-adding it
         setTasks(prev => prev.filter(t => t.id !== id))
         lastWriteTime.current = Date.now()
-        // No showGlobalLoading — optimistic delete gives instant feedback
         try {
           const res = await api(`/api/tasks/${id}`, { method: 'DELETE' })
           if (!res.ok) { toast('Gagal menghapus task', 'error'); lastWriteTime.current = 0; delayedFetch(); return }
           toast('Dihapus!', 'success')
           delayedFetch()
         } catch { toast('Gagal menghapus task', 'error'); lastWriteTime.current = 0; delayedFetch() }
-        finally { setConfirmData(null) }
       }
     })
   }
@@ -1315,7 +1315,8 @@ export default function MBGPage() {
           lastWriteTime.current = Date.now()
           delayedFetch()
         } catch { toast('Gagal batch complete', 'error'); lastWriteTime.current = 0; delayedFetch() }
-        finally { setBatchCompleting(null); setConfirmData(null) }
+        setBatchCompleting(null)
+        setConfirmData(null)
       }
     })
   }
@@ -1423,14 +1424,14 @@ export default function MBGPage() {
           }
         }
         lastWriteTime.current = Date.now()
-        // No showGlobalLoading — optimistic delete gives instant feedback
+        // Close dialog FIRST — user can see the change immediately
+        setConfirmData(null)
         try {
           const res = await api(`/api/projects/${p.id}`, { method: 'DELETE' })
           if (!res.ok) { toast('Gagal menghapus project', 'error'); lastWriteTime.current = 0; delayedFetch(); return }
           toast('Project dihapus!', 'success')
           delayedFetch()
         } catch { toast('Gagal menghapus project', 'error'); lastWriteTime.current = 0; delayedFetch() }
-        finally { setConfirmData(null) }
       }
     })
   }
@@ -1698,12 +1699,13 @@ export default function MBGPage() {
     setConfirmData({
       title: 'Hapus Catatan', message: 'Yakin hapus catatan ini?',
       onConfirm: async () => {
+        // Close dialog FIRST
+        setConfirmData(null)
         // Optimistic: remove note locally immediately
         setNotes(prev => prev.filter(n => n.id !== id))
         toast('Catatan dihapus!', 'success')
         try { const res = await api(`/api/notes/${id}`, { method: 'DELETE' }); if (!res.ok) { toast('Gagal menghapus', 'error'); fetchNotes(); return } fetchNotes() }
         catch { toast('Gagal', 'error'); fetchNotes() }
-        setConfirmData(null)
       }
     })
   }
@@ -2060,12 +2062,13 @@ export default function MBGPage() {
     setConfirmData({
       title: 'Hapus Template', message: 'Yakin hapus template ini?',
       onConfirm: async () => {
+        // Close dialog FIRST
+        setConfirmData(null)
         // Optimistic: remove template locally immediately
         setTemplates(prev => prev.filter(t => t.id !== id))
         toast('Template dihapus!', 'success')
         try { const res = await api(`/api/templates/${id}`, { method: 'DELETE' }); if (!res.ok) { toast('Gagal menghapus', 'error'); fetchTemplates(); return } fetchTemplates() }
         catch { toast('Gagal menghapus', 'error'); fetchTemplates() }
-        setConfirmData(null)
       }
     })
   }
