@@ -7,6 +7,15 @@ export interface ScheduleTask {
   logs: { completedAt: Date }[]
 }
 
+function safeDate(v: unknown): Date | null {
+  if (v instanceof Date && !isNaN(v.getTime())) return v
+  if (typeof v === 'string' || typeof v === 'number') {
+    const d = new Date(v)
+    if (!isNaN(d.getTime())) return d
+  }
+  return null
+}
+
 export function getNextReadyAt(task: ScheduleTask): Date | null {
   let config: Record<string, unknown>
   try {
@@ -15,9 +24,11 @@ export function getNextReadyAt(task: ScheduleTask): Date | null {
     config = {}
   }
   const now = new Date()
-  const lastLog = task.logs.length > 0
-    ? new Date(task.logs.sort((a, b) => b.completedAt.getTime() - a.completedAt.getTime())[0].completedAt)
-    : null
+  const validLogs = task.logs
+    .map(l => safeDate(l.completedAt))
+    .filter((d): d is Date => d !== null)
+    .sort((a, b) => b.getTime() - a.getTime())
+  const lastLog = validLogs.length > 0 ? validLogs[0] : null
 
   switch (task.scheduleType) {
     case 'sekali':
@@ -45,7 +56,8 @@ export function getNextReadyAt(task: ScheduleTask): Date | null {
     case 'harian': case 'kustom': {
       const cdHours = (config.cooldownHours as number) || 24
       if (!lastLog) return now
-      return new Date(lastLog.getTime() + cdHours * 3600000)
+      const ready = new Date(lastLog.getTime() + cdHours * 3600000)
+      return isNaN(ready.getTime()) ? now : ready
     }
     case 'mingguan': {
       const targetDay = (config.dayOfWeek as number) ?? 0 // 0=Minggu ... 6=Sabtu
@@ -55,8 +67,7 @@ export function getNextReadyAt(task: ScheduleTask): Date | null {
       let daysUntil = targetDay - currentDay
       if (daysUntil < 0) daysUntil += 7
       if (daysUntil === 0 && lastLog) {
-        const lastDate = new Date(lastLog)
-        const hoursSince = (current.getTime() - lastDate.getTime()) / 3600000
+        const hoursSince = (current.getTime() - lastLog.getTime()) / 3600000
         if (hoursSince < cdHours) daysUntil = 7
       }
       const next = new Date(current)
@@ -64,7 +75,7 @@ export function getNextReadyAt(task: ScheduleTask): Date | null {
       next.setHours(0, 0, 0, 0)
       if (!lastLog) return daysUntil === 0 ? now : next
       const readyAfterCd = new Date(lastLog.getTime() + cdHours * 3600000)
-      if (readyAfterCd > next) next.setDate(next.getDate() + 7)
+      if (!isNaN(readyAfterCd.getTime()) && readyAfterCd > next) next.setDate(next.getDate() + 7)
       return next > now ? next : now
     }
     case 'jam_tertentu': {
@@ -78,9 +89,9 @@ export function getNextReadyAt(task: ScheduleTask): Date | null {
         return d
       }).sort((a, b) => a.getTime() - b.getTime())
       for (const t of sorted) { if (t > now) return t }
-      const tomorrow = new Date(sorted[0])
+      const tomorrow = sorted.length > 0 ? new Date(sorted[0]) : new Date(now)
       tomorrow.setDate(tomorrow.getDate() + 1)
-      return tomorrow
+      return isNaN(tomorrow.getTime()) ? now : tomorrow
     }
     default:
       return null

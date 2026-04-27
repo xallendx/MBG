@@ -23,29 +23,46 @@ export async function GET() {
     })
 
     const enriched = tasks.map(t => {
-      const status = computeStatus(t)
-      const nextReady = getNextReadyAt(t)
-      const lastCompleted = t.logs.length > 0 ? t.logs[0].completedAt : null
-      let cooldownRemaining = ''
-      if (status === 'cooldown' && nextReady) {
-        const diff = nextReady.getTime() - Date.now()
-        const hours = Math.floor(diff / 3600000)
-        const mins = Math.floor((diff % 3600000) / 60000)
-        const secs = Math.floor((diff % 60000) / 1000)
-        if (hours > 0) cooldownRemaining = `${hours}j ${mins}m`
-        else if (mins > 0) cooldownRemaining = `${mins}m ${secs}s`
-        else cooldownRemaining = `${secs}s`
-      }
-      const cooldownMs = status === 'cooldown' && nextReady ? Math.max(0, nextReady.getTime() - Date.now()) : 0
-      return {
-        ...t,
-        status,
-        nextReadyAt: nextReady?.toISOString() || null,
-        lastCompletedAt: lastCompleted?.toISOString() || null,
-        cooldownRemaining,
-        cooldownMs,
-        logCount: t._count.logs,
-        project: t.project ? { id: t.project.id, name: t.project.name, color: t.project.color } : null
+      try {
+        const status = computeStatus(t)
+        const nextReady = getNextReadyAt(t)
+        const rawLastCompleted = t.logs.length > 0 ? t.logs[0].completedAt : null
+        const lastCompleted = rawLastCompleted instanceof Date && !isNaN(rawLastCompleted.getTime()) ? rawLastCompleted : null
+        let cooldownRemaining = ''
+        if (status === 'cooldown' && nextReady) {
+          const diff = nextReady.getTime() - Date.now()
+          if (!isNaN(diff) && isFinite(diff)) {
+            const hours = Math.floor(diff / 3600000)
+            const mins = Math.floor((diff % 3600000) / 60000)
+            const secs = Math.floor((diff % 60000) / 1000)
+            if (hours > 0) cooldownRemaining = `${hours}j ${mins}m`
+            else if (mins > 0) cooldownRemaining = `${mins}m ${secs}s`
+            else cooldownRemaining = `${secs}s`
+          }
+        }
+        const cooldownMs = status === 'cooldown' && nextReady && !isNaN(nextReady.getTime()) ? Math.max(0, nextReady.getTime() - Date.now()) : 0
+        return {
+          ...t,
+          status,
+          nextReadyAt: nextReady instanceof Date && !isNaN(nextReady.getTime()) ? nextReady.toISOString() : null,
+          lastCompletedAt: lastCompleted?.toISOString() || null,
+          cooldownRemaining,
+          cooldownMs,
+          logCount: t._count.logs,
+          project: t.project ? { id: t.project.id, name: t.project.name, color: t.project.color } : null
+        }
+      } catch (e) {
+        console.error('[enrichment error for task]', t.id, e)
+        return {
+          ...t,
+          status: 'siap' as const,
+          nextReadyAt: null,
+          lastCompletedAt: null,
+          cooldownRemaining: '',
+          cooldownMs: 0,
+          logCount: t._count.logs,
+          project: t.project ? { id: t.project.id, name: t.project.name, color: t.project.color } : null
+        }
       }
     })
 
@@ -69,7 +86,7 @@ export async function GET() {
     return NextResponse.json(sorted)
   } catch (e) {
     console.error('[GET /api/tasks]', e)
-    return NextResponse.json({ error: 'Request failed', detail: e instanceof Error ? e.message : String(e) }, { status: 500 })
+    return NextResponse.json({ error: 'Request failed' }, { status: 500 })
   }
 }
 
