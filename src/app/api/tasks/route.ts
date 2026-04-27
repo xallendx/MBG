@@ -3,6 +3,10 @@ import { db } from '@/lib/db'
 import { requireUser } from '@/lib/auth'
 import { getNextReadyAt, computeStatus } from '@/lib/schedule'
 
+const VALID_SCHEDULE_TYPES = ['sekali', 'harian', 'mingguan', 'jam_tertentu', 'tanggal_spesifik', 'kustom']
+const VALID_PRIORITIES = ['high', 'medium', 'low']
+const COLOR_RE = /^#[0-9A-Fa-f]{3,8}$/
+
 export async function GET() {
   try {
     const userId = await requireUser()
@@ -63,7 +67,7 @@ export async function GET() {
 
     return NextResponse.json(sorted)
   } catch {
-    return NextResponse.json({ error: 'Gagal memproses permintaan' }, { status: 500 })
+    return NextResponse.json({ error: 'Request failed' }, { status: 500 })
   }
 }
 
@@ -77,6 +81,21 @@ export async function POST(req: NextRequest) {
 
     if (!name?.trim()) {
       return NextResponse.json({ error: 'Nama task wajib diisi' }, { status: 400 })
+    }
+    if (name.length > 200) {
+      return NextResponse.json({ error: 'Nama maksimal 200 karakter' }, { status: 400 })
+    }
+    if (description !== undefined && description !== null && description.length > 5000) {
+      return NextResponse.json({ error: 'Deskripsi maksimal 5000 karakter' }, { status: 400 })
+    }
+    if (link !== undefined && link !== null && link.length > 2000) {
+      return NextResponse.json({ error: 'Link maksimal 2000 karakter' }, { status: 400 })
+    }
+    if (scheduleType && !VALID_SCHEDULE_TYPES.includes(scheduleType)) {
+      return NextResponse.json({ error: 'Tipe jadwal tidak valid' }, { status: 400 })
+    }
+    if (priority && !VALID_PRIORITIES.includes(priority)) {
+      return NextResponse.json({ error: 'Priority tidak valid' }, { status: 400 })
     }
 
     const maxPos = await db.task.findFirst({
@@ -103,6 +122,6 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json(task, { status: 201 })
   } catch {
-    return NextResponse.json({ error: 'Gagal memproses permintaan' }, { status: 500 })
+    return NextResponse.json({ error: 'Request failed' }, { status: 500 })
   }
 }

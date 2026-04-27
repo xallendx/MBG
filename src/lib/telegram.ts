@@ -27,18 +27,23 @@ export async function sendTelegramMessage(chatId: number | string, text: string,
   return res.json()
 }
 
-export async function setTelegramWebhook(url: string) {
+export async function setTelegramWebhook(url: string, secretToken?: string) {
   if (!TELEGRAM_BOT_TOKEN) {
     throw new Error('TELEGRAM_BOT_TOKEN is not set')
+  }
+
+  const payload: Record<string, unknown> = {
+    url,
+    allowed_updates: ['message', 'callback_query'],
+  }
+  if (secretToken) {
+    payload.secret_token = secretToken
   }
 
   const res = await fetch(`${TELEGRAM_API}${TELEGRAM_BOT_TOKEN}/setWebhook`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      url,
-      allowed_updates: ['message', 'callback_query'],
-    }),
+    body: JSON.stringify(payload),
   })
 
   if (!res.ok) {

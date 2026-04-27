@@ -75,7 +75,7 @@ export default function MBGPage() {
   const [confirmData, setConfirmData] = useState<{ title: string; message: string; onConfirm: () => void } | null>(null)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; task: Task } | null>(null)
   const [projectContextMenu, setProjectContextMenu] = useState<{ x: number; y: number; project: Project } | null>(null)
-  const [toasts, setToasts] = useState<{ msg: string; type: 'success' | 'error' | 'info' }[]>([])
+  const [toasts, setToasts] = useState<{ msg: string; type: 'success' | 'error' | 'info'; id: number }[]>([])
   const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({})
   const [openMenu, setOpenMenu] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
@@ -383,7 +383,7 @@ export default function MBGPage() {
   // Scheduler: panggil /api/notify/run setiap 30 detik untuk Telegram notif
   useEffect(() => {
     if (!authenticated) return
-    const run = async () => { try { await fetch('/api/notify/run', { credentials: 'include', headers: getAuthHeaders() }) } catch { /* silent */ } }
+    const run = async () => { try { await fetch('/api/notify/run', { method: 'POST', credentials: 'include', headers: getAuthHeaders() }) } catch { /* silent */ } }
     run()
     const iv = setInterval(run, 30000)
     return () => clearInterval(iv)
@@ -555,6 +555,13 @@ export default function MBGPage() {
   }, [formTimeFormat])
 
   const toastTimersRef = useRef<ReturnType<typeof setTimeout>[]>([])
+  const fetchTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([])
+
+  // Helper: delayed fetch with cleanup tracking
+  const delayedFetch = useCallback(() => {
+    const t = setTimeout(() => fetchData(false, true), 800)
+    fetchTimeoutsRef.current.push(t)
+  }, [fetchData])
 
   /* ===== Cleanup all timers on unmount ===== */
   useEffect(() => {
@@ -564,13 +571,15 @@ export default function MBGPage() {
       if (pomodoroTimerRef.current) clearInterval(pomodoroTimerRef.current)
       if (longPressTimerRef.current) { clearTimeout(longPressTimerRef.current); longPressTimerRef.current = null }
       toastTimersRef.current.forEach(t => clearTimeout(t))
+      fetchTimeoutsRef.current.forEach(t => clearTimeout(t))
     }
   }, [])
 
   const toast = (msg: string, type: 'success' | 'error' | 'info' = 'info') => {
-    setToasts(p => [...p, { msg, type }])
+    const id = Date.now() + Math.random()
+    setToasts(p => [...p, { msg, type, id }])
     const timer = setTimeout(() => {
-      setToasts(p => p.slice(1))
+      setToasts(p => p.filter(t => t.id !== id))
       const idx = toastTimersRef.current.indexOf(timer)
       if (idx > -1) toastTimersRef.current.splice(idx, 1)
     }, type === 'error' ? 4000 : 2500)
@@ -586,7 +595,7 @@ export default function MBGPage() {
       toast('Task selesai!', 'success')
       // Optimistic update: update task status locally
       setTasks(prev => prev.map(t => t.id === id ? { ...t, status: 'selesai' as const, cooldownRemaining: '', cooldownMs: 0 } : t))
-      setTimeout(() => fetchData(false, true), 800)
+      delayedFetch()
     }
     catch { toast('Gagal menyelesaikan task', 'error') }
     finally { setCompletingIds(p => { const n = new Set(p); n.delete(id); return n }) }
@@ -598,7 +607,7 @@ export default function MBGPage() {
       toast('Task di-reset!', 'success')
       // Optimistic update: update task status locally
       setTasks(prev => prev.map(t => t.id === id ? { ...t, status: 'siap' as const, nextReadyAt: null, cooldownRemaining: '', cooldownMs: 0 } : t))
-      setTimeout(() => fetchData(false, true), 800)
+      delayedFetch()
     }
     catch { toast('Gagal mereset task', 'error') }
   }
@@ -613,7 +622,7 @@ export default function MBGPage() {
   const delTask = (id: string) => {
     setConfirmData({
       title: 'Hapus Task', message: 'Yakin hapus task ini? Log juga ikut terhapus.',
-      onConfirm: async () => { try { await api(`/api/tasks/${id}`, { method: 'DELETE' }); toast('Dihapus!', 'success'); setTasks(prev => prev.filter(t => t.id !== id)); setTimeout(() => fetchData(false, true), 800) } catch { toast('Gagal menghapus task', 'error') }; setConfirmData(null) }
+      onConfirm: async () => { try { await api(`/api/tasks/${id}`, { method: 'DELETE' }); toast('Dihapus!', 'success'); setTasks(prev => prev.filter(t => t.id !== id)); delayedFetch() } catch { toast('Gagal menghapus task', 'error') }; setConfirmData(null) }
     })
   }
 
@@ -644,7 +653,7 @@ export default function MBGPage() {
       } else return
       setDialogType(null); setSelectedTaskId(null)
       // Delayed fetch for server sync (handles Neon pgbouncer read-after-write latency)
-      setTimeout(() => fetchData(false, true), 800)
+      delayedFetch()
     } catch (e) { console.error(e); toast('Gagal menyimpan task', 'error') }
     finally { setSavingTask(false) }
   }
@@ -657,7 +666,7 @@ export default function MBGPage() {
     try {
       await api(`/api/tasks/${task.id}`, jsonOpts('PUT', { pinned: !task.pinned }))
       setTasks(prev => prev.map(t => t.id === task.id ? { ...t, pinned: !task.pinned } : t))
-      setTimeout(() => fetchData(false, true), 800)
+      delayedFetch()
     } catch { toast('Gagal pin/unpin task', 'error') }
   }
 
@@ -672,7 +681,7 @@ export default function MBGPage() {
         projectId: t.project?.id, priority: t.priority || 'medium'
       }))
       toast('Task diduplikat!', 'success')
-      setTimeout(() => fetchData(false, true), 800)
+      delayedFetch()
     } catch { toast('Gagal menduplikat task', 'error') }
   }
 
@@ -686,7 +695,7 @@ export default function MBGPage() {
       const targetProj = projects.find(p => p.id === moveTargetProjectId)
       setTasks(prev => prev.map(t => t.id === moveDialogTask.id ? { ...t, project: targetProj ? { id: targetProj.id, name: targetProj.name, color: targetProj.color } : null } : t))
       setMoveDialogTask(null); setMoveTargetProjectId(null)
-      setTimeout(() => fetchData(false, true), 800)
+      delayedFetch()
     } catch { toast('Gagal memindahkan task', 'error') }
   }
 
@@ -711,7 +720,7 @@ export default function MBGPage() {
           setTasks(prev => prev.map(t => completedIds.has(t.id) ? { ...t, status: 'selesai' as const, cooldownRemaining: '', cooldownMs: 0 } : t))
         } catch { toast('Gagal batch complete', 'error') }
         setBatchCompleting(null)
-        setTimeout(() => fetchData(false, true), 800)
+        delayedFetch()
         setConfirmData(null)
       }
     })
@@ -750,7 +759,7 @@ export default function MBGPage() {
       // Optimistic update: add new project to local state immediately
       setProjects(prev => [...prev, { id: data.id, name: data.name, color: data.color, _count: { tasks: 0 } }])
       // Delayed fetch to sync with server (handles Neon pgbouncer read-after-write latency)
-      setTimeout(() => fetchData(false, true), 800)
+      delayedFetch()
     } catch (e) { console.error(e); toast('Gagal membuat project', 'error') }
   }
 
@@ -761,7 +770,7 @@ export default function MBGPage() {
       // Optimistic update: update project in local state immediately
       setProjects(prev => prev.map(p => p.id === id ? { ...p, name, color } : p))
       setDialogType(null)
-      setTimeout(() => fetchData(false, true), 800)
+      delayedFetch()
     } catch { toast('Gagal memperbarui project', 'error') }
   }
 
@@ -789,7 +798,7 @@ export default function MBGPage() {
               setDialogType(null)
             }
           }
-          setTimeout(() => fetchData(false, true), 800)
+          delayedFetch()
         } catch { toast('Gagal', 'error') }
         setConfirmData(null)
       }
@@ -1098,7 +1107,7 @@ export default function MBGPage() {
     if (!registerInviteCode.trim()) { setAuthError('Kode undangan wajib diisi'); return }
     if (!registerUsername.trim() || !registerPassword.trim()) { setAuthError('Username dan password wajib diisi'); return }
     if (registerUsername.trim().length < 3) { setAuthError('Username minimal 3 karakter'); return }
-    if (registerPassword.length < 4) { setAuthError('Password minimal 4 karakter'); return }
+    if (registerPassword.length < 6) { setAuthError('Password minimal 6 karakter'); return }
     setAuthLoading(true)
     setAuthError('')
     try {

@@ -3,20 +3,21 @@ import { setTelegramWebhook } from '@/lib/telegram'
 import { requireAdmin } from '@/lib/auth'
 
 export async function GET(req: NextRequest) {
-  const { error } = await requireAdmin()
-  if (error) return error
-
-  const token = process.env.TELEGRAM_BOT_TOKEN
-  if (!token) {
-    return NextResponse.json({ error: 'TELEGRAM_BOT_TOKEN belum diatur di environment' }, { status: 500 })
-  }
-
-  const host = req.headers.get('host') || ''
-  const protocol = host.includes('localhost') ? 'http' : 'https'
-  const webhookUrl = `${protocol}://${host}/api/telegram/webhook`
-
   try {
-    const result = await setTelegramWebhook(webhookUrl)
+    const { error } = await requireAdmin()
+    if (error) return error
+
+    const token = process.env.TELEGRAM_BOT_TOKEN
+    if (!token) {
+      return NextResponse.json({ error: 'TELEGRAM_BOT_TOKEN belum diatur di environment' }, { status: 500 })
+    }
+
+    const host = req.headers.get('host') || ''
+    const protocol = host.includes('localhost') ? 'http' : 'https'
+    const webhookUrl = `${protocol}://${host}/api/telegram/webhook`
+    const secretToken = process.env.TELEGRAM_WEBHOOK_SECRET || undefined
+
+    const result = await setTelegramWebhook(webhookUrl, secretToken)
     return NextResponse.json({
       success: true,
       message: 'Webhook berhasil diatur!',
@@ -24,8 +25,6 @@ export async function GET(req: NextRequest) {
       result
     })
   } catch (error) {
-    return NextResponse.json({
-      error: 'Gagal setup webhook: ' + (error instanceof Error ? error.message : String(error))
-    }, { status: 500 })
+    return NextResponse.json({ error: 'Request failed' }, { status: 500 })
   }
 }

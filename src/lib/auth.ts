@@ -4,10 +4,15 @@ import { NextResponse } from 'next/server'
 import crypto from 'crypto'
 
 // HMAC cookie signing — prevents tampering with mbg_user_id cookie
-const COOKIE_SECRET = process.env.COOKIE_SECRET || 'mbg-default-secret-change-in-production'
+const COOKIE_SECRET = process.env.COOKIE_SECRET
+if (!COOKIE_SECRET) {
+  console.warn('[SECURITY] COOKIE_SECRET env var is not set. Using fallback for development only.')
+}
+
+const _SECRET = COOKIE_SECRET || 'dev-only-fallback-do-not-use-in-production'
 
 function signCookie(userId: string): string {
-  const sig = crypto.createHmac('sha256', COOKIE_SECRET).update(userId).digest('hex').slice(0, 16)
+  const sig = crypto.createHmac('sha256', _SECRET).update(userId).digest('hex').slice(0, 32)
   return `${userId}.${sig}`
 }
 
@@ -16,7 +21,7 @@ function verifyCookie(value: string): string | null {
   if (dotIdx === -1) return null
   const userId = value.slice(0, dotIdx)
   const sig = value.slice(dotIdx + 1)
-  const expected = crypto.createHmac('sha256', COOKIE_SECRET).update(userId).digest('hex').slice(0, 16)
+  const expected = crypto.createHmac('sha256', _SECRET).update(userId).digest('hex').slice(0, 32)
   if (sig !== expected) return null
   return userId
 }
@@ -39,6 +44,17 @@ export function setAuthCookie(res: NextResponse, userId: string) {
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax',
     maxAge: 60 * 60 * 24 * 30, // 30 days
+    path: '/',
+  })
+}
+
+// Helper: clear auth cookie
+export function clearAuthCookie(res: NextResponse) {
+  res.cookies.set('mbg_user_id', '', {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    maxAge: 0,
     path: '/',
   })
 }
@@ -82,3 +98,6 @@ export async function requireUser() {
   if (!user || user.isBlocked) return null
   return user.id
 }
+
+// Export verifyCookie for use in identify route (DRY)
+export { verifyCookie }

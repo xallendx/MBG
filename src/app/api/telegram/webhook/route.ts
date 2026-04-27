@@ -3,6 +3,29 @@ import { db } from '@/lib/db'
 import { sendTelegramMessage } from '@/lib/telegram'
 import { getNextReadyAt, computeStatus } from '@/lib/schedule'
 
+function escHtml(s: string) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+// In-memory rate limiting for /start code attempts: chatId -> { count, windowStart }
+const startAttempts = new Map<number, { count: number; windowStart: number }>()
+const MAX_START_ATTEMPTS = 5
+const START_WINDOW_MS = 15 * 60 * 1000 // 15 minutes
+
+function checkRateLimit(chatId: number): boolean {
+  const now = Date.now()
+  const entry = startAttempts.get(chatId)
+  if (!entry || now - entry.windowStart > START_WINDOW_MS) {
+    startAttempts.set(chatId, { count: 1, windowStart: now })
+    return true
+  }
+  if (entry.count >= MAX_START_ATTEMPTS) {
+    return false
+  }
+  entry.count++
+  return true
+}
+
 // Helper: cari user dengan telegramCode yang cocok
 async function findUserByTelegramCode(code: string) {
   // Fix A7: gunakan filter settings contains untuk efisiensi, bukan scan semua
@@ -41,6 +64,15 @@ async function findUserByTelegramChatId(chatId: number) {
 
 export async function POST(req: NextRequest) {
   try {
+    // Verify secret_token if TELEGRAM_WEBHOOK_SECRET is configured
+    const webhookSecret = process.env.TELEGRAM_WEBHOOK_SECRET
+    if (webhookSecret) {
+      const providedToken = req.headers.get('x-telegram-bot-api-secret-token')
+      if (providedToken !== webhookSecret) {
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      }
+    }
+
     const body = await req.json()
     const message = body.message
     if (!message || !message.text) {
@@ -55,7 +87,13 @@ export async function POST(req: NextRequest) {
     if (text.startsWith('/start')) {
       const code = text.replace('/start', '').trim()
       if (!code) {
-        await sendTelegramMessage(chatId, 'Selamat datang! Kirim /start <kode> untuk menghubungkan akun MBG Anda.')
+        await sendTelegramMessage(chatId, 'Selamat datang! Kirim /start &lt;kode&gt; untuk menghubungkan akun MBG Anda.')
+        return NextResponse.json({ ok: true })
+      }
+
+      // Rate limit check
+      if (!checkRateLimit(chatId)) {
+        await sendTelegramMessage(chatId, '⚠️ Terlalu banyak percobaan. Coba lagi dalam 15 menit.')
         return NextResponse.json({ ok: true })
       }
 
@@ -82,7 +120,7 @@ export async function POST(req: NextRequest) {
         }
       })
 
-      await sendTelegramMessage(chatId, `✅ Telegram berhasil dihubungkan!\n\nAkun: ${settings.telegramName}\n\nKirim /status untuk melihat ringkasan task Anda.`, 'HTML')
+      await sendTelegramMessage(chatId, `✅ Telegram berhasil dihubungkan!\n\nAkun: ${escHtml(settings.telegramName)}\n\nKirim /status untuk melihat ringkasan task Anda.`, 'HTML')
       return NextResponse.json({ ok: true })
     }
 
@@ -91,7 +129,7 @@ export async function POST(req: NextRequest) {
       const matchedUser = await findUserByTelegramChatId(chatId)
 
       if (!matchedUser) {
-        await sendTelegramMessage(chatId, '❌ Akun belum terhubung. Kirim /start <kode> untuk menghubungkan.')
+        await sendTelegramMessage(chatId, '❌ Akun belum terhubung. Kirim /start &lt;kode&gt; untuk menghubungkan.')
         return NextResponse.json({ ok: true })
       }
 
@@ -119,8 +157,8 @@ export async function POST(req: NextRequest) {
       if (siapTasks.length > 0) {
         lines.push('', '<b>📋 Siap Dikerjakan:</b>')
         siapTasks.slice(0, 10).forEach(t => {
-          const proj = t.project ? `[${t.project.name}] ` : ''
-          lines.push(`• ${proj}${t.name}`)
+          const proj = t.project ? `[${escHtml(t.project.name)}] ` : ''
+          lines.push(`• ${proj}${escHtml(t.name)}`)
         })
         if (siapTasks.length > 10) {
           lines.push(`  ... dan ${siapTasks.length - 10} lainnya`)
@@ -134,8 +172,7 @@ export async function POST(req: NextRequest) {
     // Unknown command
     await sendTelegramMessage(chatId, 'Perintah tidak dikenali. Kirim /status untuk melihat ringkasan task.')
     return NextResponse.json({ ok: true })
-  } catch (error) {
-    console.error('Telegram webhook error:', error)
+  } catch {
     return NextResponse.json({ ok: true })
   }
 }

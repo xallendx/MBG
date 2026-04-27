@@ -1,13 +1,10 @@
 import { NextResponse } from 'next/server'
 import { db } from '@/lib/db'
-import { cookies } from 'next/headers'
-import crypto from 'crypto'
-
-// Cookie secret must match auth.ts
-const COOKIE_SECRET = process.env.COOKIE_SECRET || 'mbg-default-secret-change-in-production'
+import { verifyCookie, clearAuthCookie } from '@/lib/auth'
 
 export async function GET() {
   try {
+    const { cookies } = await import('next/headers')
     const cookieStore = await cookies()
     const raw = cookieStore.get('mbg_user_id')?.value
 
@@ -15,22 +12,13 @@ export async function GET() {
       return NextResponse.json({ userId: null, authenticated: false }, { status: 401 })
     }
 
-    // Verify HMAC signature
-    const dotIdx = raw.lastIndexOf('.')
-    if (dotIdx === -1) {
-      // Legacy cookie without signature — clear it
-      const res = NextResponse.json({ userId: null, authenticated: false }, { status: 401 })
-      res.cookies.set('mbg_user_id', '', { maxAge: 0, path: '/' })
-      return res
-    }
-    const userId = raw.slice(0, dotIdx)
-    const sig = raw.slice(dotIdx + 1)
-    const expected = crypto.createHmac('sha256', COOKIE_SECRET).update(userId).digest('hex').slice(0, 16)
+    // Verify HMAC signature (uses shared function from auth.ts)
+    const userId = verifyCookie(raw)
 
-    if (sig !== expected) {
-      // Tampered cookie — clear it
+    if (!userId) {
+      // Tampered or legacy cookie — clear it
       const res = NextResponse.json({ userId: null, authenticated: false }, { status: 401 })
-      res.cookies.set('mbg_user_id', '', { maxAge: 0, path: '/' })
+      clearAuthCookie(res)
       return res
     }
 
@@ -42,13 +30,13 @@ export async function GET() {
 
     if (!user) {
       const res = NextResponse.json({ userId: null, authenticated: false }, { status: 401 })
-      res.cookies.set('mbg_user_id', '', { maxAge: 0, path: '/' })
+      clearAuthCookie(res)
       return res
     }
 
     if (user.isBlocked) {
       const res = NextResponse.json({ userId: null, authenticated: false, blocked: true }, { status: 401 })
-      res.cookies.set('mbg_user_id', '', { maxAge: 0, path: '/' })
+      clearAuthCookie(res)
       return res
     }
 
