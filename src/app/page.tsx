@@ -741,7 +741,7 @@ export default function MBGPage() {
 
   // Periodic sync — stable interval, always calls latest fetchData
   useEffect(() => {
-    const i = setInterval(() => fetchDataRef.current(false, true), 30000)
+    const i = setInterval(() => fetchDataRef.current(false, true), 60000) // Reduced from 30s to 60s — less aggressive
     return () => clearInterval(i)
   }, [])
 
@@ -757,7 +757,7 @@ export default function MBGPage() {
     if (!authenticated) return
     const run = async () => { try { await fetch('/api/notify/run', { method: 'POST', credentials: 'include', headers: getAuthHeaders() }) } catch { /* silent */ } }
     run()
-    const iv = setInterval(run, 30000)
+    const iv = setInterval(run, 60000) // Reduced from 30s to 60s
     return () => clearInterval(iv)
   }, [authenticated])
 
@@ -970,11 +970,16 @@ export default function MBGPage() {
   const miscTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([])
   // Track last optimistic write time — prevent stale fetch from overwriting optimistic state
   const lastWriteTime = useRef(0)
-  const SKIP_FETCH_AFTER_WRITE_MS = 8000 // Increased: Don't overwrite tasks/projects within 8s of a write (was 4s)
+  const SKIP_FETCH_AFTER_WRITE_MS = 5000 // Reduced from 8s: Don't overwrite tasks/projects within 5s of a write
 
   // Helper: delayed fetch with cleanup tracking + save to local cache
   const delayedFetch = useCallback(() => {
-    const t = setTimeout(() => fetchData(false, true), 5000) // Increased from 3s to 5s — less aggressive fetching
+    // Skip if we're within the write protection window — data won't be applied anyway
+    const timeSinceWrite = Date.now() - lastWriteTime.current
+    const waitMs = timeSinceWrite < 0
+      ? 1000 // lastWriteTime is in the future, wait briefly
+      : Math.max(1000, SKIP_FETCH_AFTER_WRITE_MS - timeSinceWrite + 500) // wait until after protection window + 500ms buffer
+    const t = setTimeout(() => fetchData(false, true), Math.min(waitMs, 10000)) // cap at 10s
     fetchTimeoutsRef.current.push(t)
   }, [fetchData])
 
@@ -1023,7 +1028,7 @@ export default function MBGPage() {
     if (completingIdsRef.current.has(id)) return
     completingIdsRef.current.add(id)
     setCompletingIds(p => new Set(p).add(id))
-    showGlobalLoading()
+    // No showGlobalLoading — optimistic update gives instant feedback
     try {
       const res = await api(`/api/tasks/${id}/complete`, { method: 'POST' })
       if (!res.ok) { toast('Gagal menyelesaikan task', 'error'); return }
@@ -1034,11 +1039,11 @@ export default function MBGPage() {
       delayedFetch()
     }
     catch { toast('Gagal menyelesaikan task', 'error') }
-    finally { completingIdsRef.current.delete(id); setCompletingIds(p => { const n = new Set(p); n.delete(id); return n }); hideGlobalLoading() }
+    finally { completingIdsRef.current.delete(id); setCompletingIds(p => { const n = new Set(p); n.delete(id); return n }) }
   }
 
   const resetTask = async (id: string) => {
-    showGlobalLoading()
+    // No showGlobalLoading — optimistic update gives instant feedback
     try {
       const res = await api(`/api/tasks/${id}/reset`, { method: 'POST' })
       if (!res.ok) { toast('Gagal mereset task', 'error'); return }
@@ -1049,7 +1054,6 @@ export default function MBGPage() {
       delayedFetch()
     }
     catch { toast('Gagal mereset task', 'error') }
-    finally { hideGlobalLoading() }
   }
 
   const reset = (id: string) => {
@@ -1066,14 +1070,14 @@ export default function MBGPage() {
         // Optimistic delete FIRST — prevent sync from re-adding it
         setTasks(prev => prev.filter(t => t.id !== id))
         lastWriteTime.current = Date.now()
-        showGlobalLoading()
+        // No showGlobalLoading — optimistic delete gives instant feedback
         try {
           const res = await api(`/api/tasks/${id}`, { method: 'DELETE' })
           if (!res.ok) { toast('Gagal menghapus task', 'error'); lastWriteTime.current = 0; delayedFetch(); return }
           toast('Dihapus!', 'success')
           delayedFetch()
         } catch { toast('Gagal menghapus task', 'error'); lastWriteTime.current = 0; delayedFetch() }
-        finally { hideGlobalLoading(); setConfirmData(null) }
+        finally { setConfirmData(null) }
       }
     })
   }
@@ -1096,7 +1100,7 @@ export default function MBGPage() {
     const editTaskId = selectedTaskId
 
     setSavingTask(true)
-    showGlobalLoading()
+    // No showGlobalLoading — optimistic update gives instant feedback
 
     // Optimistic update for ADD: create temp task immediately
     let tempId: string | null = null
@@ -1174,7 +1178,7 @@ export default function MBGPage() {
       lastWriteTime.current = 0
       toast('Gagal menyimpan task', 'error')
     }
-    finally { setSavingTask(false); hideGlobalLoading() }
+    finally { setSavingTask(false) }
   }
 
   const saveNotes = async (id: string, notes: string) => {
@@ -1187,7 +1191,7 @@ export default function MBGPage() {
     // Optimistic update first
     setTasks(prev => prev.map(t => t.id === task.id ? { ...t, pinned: !task.pinned } : t))
     lastWriteTime.current = Date.now()
-    showGlobalLoading()
+    // No showGlobalLoading — optimistic update gives instant feedback
     try {
       const res = await api(`/api/tasks/${task.id}`, jsonOpts('PUT', { pinned: !task.pinned }))
       if (!res.ok) {
@@ -1204,7 +1208,6 @@ export default function MBGPage() {
       setTasks(prev => prev.map(t => t.id === task.id ? { ...t, pinned: task.pinned } : t))
       lastWriteTime.current = 0
     }
-    finally { hideGlobalLoading() }
   }
 
   /* ===== Fix #8: Duplicate Task ===== */
@@ -1225,7 +1228,7 @@ export default function MBGPage() {
     setTasks(prev => [dupTask, ...prev])
     if (t.project?.id) setExpandedProjects(prev => new Set(prev).add(t.project!.id))
     lastWriteTime.current = Date.now()
-    showGlobalLoading()
+    // No showGlobalLoading — optimistic update gives instant feedback
     try {
       const res = await api('/api/tasks', jsonOpts('POST', {
         name: t.name + ' (copy)', description: t.description, link: t.link,
@@ -1247,7 +1250,6 @@ export default function MBGPage() {
       lastWriteTime.current = 0
       toast('Gagal menduplikat task', 'error')
     }
-    finally { hideGlobalLoading() }
   }
 
   /* ===== Fix #9: Move Task to Project ===== */
@@ -1260,7 +1262,7 @@ export default function MBGPage() {
     if (targetProj) setExpandedProjects(prev => new Set(prev).add(targetProj.id))
     lastWriteTime.current = Date.now()
     setMoveDialogTask(null); setMoveTargetProjectId(null)
-    showGlobalLoading()
+    // No showGlobalLoading — optimistic update gives instant feedback
     try {
       const res = await api(`/api/tasks/${taskId}`, jsonOpts('PUT', { projectId: moveTargetProjectId }))
       if (!res.ok) {
@@ -1272,7 +1274,6 @@ export default function MBGPage() {
       toast('Task dipindahkan!', 'success')
       delayedFetch()
     } catch { toast('Gagal memindahkan task', 'error'); lastWriteTime.current = 0; delayedFetch() }
-    finally { hideGlobalLoading() }
   }
 
   /* ===== Fix #7: Batch Complete All Ready ===== */
@@ -1289,7 +1290,7 @@ export default function MBGPage() {
         setTasks(prev => prev.map(t => readyIds.has(t.id) ? { ...t, status: 'selesai' as const, cooldownRemaining: '', cooldownMs: 0 } : t))
         lastWriteTime.current = Date.now()
         setBatchCompleting(projectId)
-        showGlobalLoading()
+        // No showGlobalLoading — optimistic update gives instant feedback
         try {
           const results = await Promise.allSettled(readyTasks.map(t => api(`/api/tasks/${t.id}/complete`, { method: 'POST' })))
           const ok = results.filter(r => r.status === 'fulfilled' && r.value.ok).length
@@ -1314,7 +1315,7 @@ export default function MBGPage() {
           lastWriteTime.current = Date.now()
           delayedFetch()
         } catch { toast('Gagal batch complete', 'error'); lastWriteTime.current = 0; delayedFetch() }
-        finally { setBatchCompleting(null); hideGlobalLoading(); setConfirmData(null) }
+        finally { setBatchCompleting(null); setConfirmData(null) }
       }
     })
   }
@@ -1393,14 +1394,13 @@ export default function MBGPage() {
     setProjects(prev => prev.map(p => p.id === id ? { ...p, name, color } : p))
     lastWriteTime.current = Date.now()
     setDialogType(null)
-    showGlobalLoading()
+    // No showGlobalLoading — optimistic update gives instant feedback
     try {
       const res = await api(`/api/projects/${id}`, jsonOpts('PUT', { name, color }))
       if (!res.ok) { toast('Gagal memperbarui project', 'error'); lastWriteTime.current = 0; delayedFetch(); return }
       toast('Project diperbarui!', 'success')
       delayedFetch()
     } catch { toast('Gagal memperbarui project', 'error'); lastWriteTime.current = 0; delayedFetch() }
-    finally { hideGlobalLoading() }
   }
 
   const delProject = (p: Project) => {
@@ -1423,14 +1423,14 @@ export default function MBGPage() {
           }
         }
         lastWriteTime.current = Date.now()
-        showGlobalLoading()
+        // No showGlobalLoading — optimistic delete gives instant feedback
         try {
           const res = await api(`/api/projects/${p.id}`, { method: 'DELETE' })
           if (!res.ok) { toast('Gagal menghapus project', 'error'); lastWriteTime.current = 0; delayedFetch(); return }
           toast('Project dihapus!', 'success')
           delayedFetch()
         } catch { toast('Gagal menghapus project', 'error'); lastWriteTime.current = 0; delayedFetch() }
-        finally { hideGlobalLoading(); setConfirmData(null) }
+        finally { setConfirmData(null) }
       }
     })
   }
@@ -1866,7 +1866,7 @@ export default function MBGPage() {
       if (formBrowserNotif !== settings.browserNotifEnabled && !formBrowserNotif) {
         unregisterPushSubscription()
       }
-      toast('Disimpan!', 'success'); setDialogType(null); fetchData()
+      toast('Disimpan!', 'success'); setDialogType(null); delayedFetch() // Use delayed instead of immediate fetch
     }
     catch { toast('Gagal', 'error') }
     finally { hideGlobalLoading() }
