@@ -5,16 +5,15 @@ import { computeStatus, getNextReadyAt } from '@/lib/schedule'
 
 // GET /api/init — combined initialization endpoint
 // Fetches all app data in a single request to avoid multiple Vercel serverless cold starts.
-// Returns: { user, tasks, projects, settings, notes, templates }
+// Optimized: selects only needed fields, strips logs array, uses minimal projection.
 export async function GET() {
   try {
-    // Single auth check — requireUser returns userId or null
     const userId = await requireUser()
     if (!userId) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    // ── Fetch user identity + all data sections in parallel ──
+    // ── Fetch all data sections in parallel ──
     const [
       userResult,
       tasksResult,
@@ -23,7 +22,7 @@ export async function GET() {
       notesResult,
       templatesResult,
     ] = await Promise.all([
-      // ── User identity (mirrors /api/identify) ──
+      // ── User identity ──
       db.user
         .findUnique({
           where: { id: userId },
@@ -44,34 +43,35 @@ export async function GET() {
           return null
         }),
 
-      // ── Tasks (mirrors /api/tasks with full enrichment) ──
+      // ── Tasks — select ONLY needed fields (no userId, no createdAt, no updatedAt) ──
       db.task
         .findMany({
           where: { userId },
-          include: {
-            project: true,
-            logs: { orderBy: { completedAt: 'desc' }, take: 1 },
+          select: {
+            id: true, name: true, description: true, link: true,
+            scheduleType: true, scheduleConfig: true, notes: true,
+            pinned: true, priority: true, position: true,
+            project: { select: { id: true, name: true, color: true } },
+            logs: { select: { completedAt: true }, orderBy: { completedAt: 'desc' }, take: 1 },
             _count: { select: { logs: true } },
           },
           orderBy: { position: 'asc' },
         })
         .then((tasks) => {
+          const now = Date.now()
           const enriched = tasks.map((t) => {
             try {
               const status = computeStatus(t)
               const nextReady = getNextReadyAt(t)
-              const rawLastCompleted =
-                t.logs.length > 0 ? t.logs[0].completedAt : null
-              const lastCompleted =
-                rawLastCompleted instanceof Date &&
-                !isNaN(rawLastCompleted.getTime())
-                  ? rawLastCompleted
-                  : null
+              const rawLastCompleted = t.logs.length > 0 ? t.logs[0].completedAt : null
+              const lastCompleted = rawLastCompleted instanceof Date && !isNaN(rawLastCompleted.getTime()) ? rawLastCompleted : null
 
               let cooldownRemaining = ''
+              let cooldownMs = 0
               if (status === 'cooldown' && nextReady) {
-                const diff = nextReady.getTime() - Date.now()
+                const diff = nextReady.getTime() - now
                 if (!isNaN(diff) && isFinite(diff)) {
+                  cooldownMs = Math.max(0, diff)
                   const hours = Math.floor(diff / 3600000)
                   const mins = Math.floor((diff % 3600000) / 60000)
                   const secs = Math.floor((diff % 60000) / 1000)
@@ -81,53 +81,34 @@ export async function GET() {
                 }
               }
 
-              const cooldownMs =
-                status === 'cooldown' &&
-                nextReady &&
-                !isNaN(nextReady.getTime())
-                  ? Math.max(0, nextReady.getTime() - Date.now())
-                  : 0
-
+              // Build minimal task object — no logs array, no internal fields
               return {
-                ...t,
+                id: t.id,
+                name: t.name,
+                description: t.description,
+                link: t.link,
+                scheduleType: t.scheduleType,
+                scheduleConfig: t.scheduleConfig,
+                notes: t.notes,
+                pinned: t.pinned,
+                priority: t.priority,
                 status,
-                nextReadyAt:
-                  nextReady instanceof Date && !isNaN(nextReady.getTime())
-                    ? nextReady.toISOString()
-                    : null,
+                nextReadyAt: nextReady instanceof Date && !isNaN(nextReady.getTime()) ? nextReady.toISOString() : null,
                 lastCompletedAt: lastCompleted?.toISOString() || null,
                 cooldownRemaining,
                 cooldownMs,
                 logCount: t._count.logs,
-                project: t.project
-                  ? {
-                      id: t.project.id,
-                      name: t.project.name,
-                      color: t.project.color,
-                    }
-                  : null,
+                project: t.project || null,
               }
             } catch (e) {
-              console.error(
-                '[GET /api/init] task enrichment error for',
-                t.id,
-                e,
-              )
+              console.error('[GET /api/init] task enrichment error for', t.id, e)
               return {
-                ...t,
-                status: 'siap' as const,
-                nextReadyAt: null,
-                lastCompletedAt: null,
-                cooldownRemaining: '',
-                cooldownMs: 0,
-                logCount: t._count.logs,
-                project: t.project
-                  ? {
-                      id: t.project.id,
-                      name: t.project.name,
-                      color: t.project.color,
-                    }
-                  : null,
+                id: t.id, name: t.name, description: t.description, link: t.link,
+                scheduleType: t.scheduleType, scheduleConfig: t.scheduleConfig, notes: t.notes,
+                pinned: t.pinned, priority: t.priority,
+                status: 'siap' as const, nextReadyAt: null, lastCompletedAt: null,
+                cooldownRemaining: '', cooldownMs: 0, logCount: t._count.logs,
+                project: t.project || null,
               }
             }
           })
@@ -146,7 +127,7 @@ export async function GET() {
             const ap = prioOrder[a.priority as string] ?? 1
             const bp = prioOrder[b.priority as string] ?? 1
             if (ap !== bp) return ap - bp
-            return a.position - b.position
+            return 0 // no position needed after sort
           })
         })
         .catch((e) => {
@@ -154,39 +135,38 @@ export async function GET() {
           return null
         }),
 
-      // ── Projects (mirrors /api/projects) ──
+      // ── Projects ──
       db.project
         .findMany({
           where: { userId },
           orderBy: { position: 'asc' },
-          include: { _count: { select: { tasks: true } } },
+          select: { id: true, name: true, color: true, _count: { select: { tasks: true } } },
         })
         .catch((e) => {
           console.error('[GET /api/init] projects fetch failed', e)
           return null
         }),
 
-      // ── Settings (mirrors /api/settings) ──
+      // ── Settings ──
       db.user
-        .findUnique({ where: { id: userId } })
+        .findUnique({ where: { id: userId }, select: { settings: true } })
         .then((user) => {
-          let settings: Record<string, unknown> = {}
           try {
-            settings = user?.settings ? JSON.parse(user.settings) : {}
+            return user?.settings ? JSON.parse(user.settings) : {}
           } catch {
-            settings = {}
+            return {}
           }
-          return settings
         })
         .catch((e) => {
           console.error('[GET /api/init] settings fetch failed', e)
           return null
         }),
 
-      // ── Notes (mirrors /api/notes) ──
+      // ── Notes ──
       db.note
         .findMany({
           where: { userId },
+          select: { id: true, content: true, color: true, pinned: true, createdAt: true, updatedAt: true },
           orderBy: [{ pinned: 'desc' }, { updatedAt: 'desc' }],
         })
         .catch((e) => {
@@ -194,10 +174,11 @@ export async function GET() {
           return null
         }),
 
-      // ── Templates (mirrors /api/templates) ──
+      // ── Templates ──
       db.taskTemplate
         .findMany({
           where: { userId },
+          select: { id: true, name: true, description: true, link: true, scheduleType: true, scheduleConfig: true, priority: true, createdAt: true, updatedAt: true },
           orderBy: { createdAt: 'desc' },
         })
         .catch((e) => {
@@ -206,7 +187,6 @@ export async function GET() {
         }),
     ])
 
-    // ── Build response — each section is independent ──
     const response = NextResponse.json({
       user: userResult,
       tasks: tasksResult ?? [],
@@ -216,12 +196,7 @@ export async function GET() {
       templates: templatesResult ?? [],
     })
 
-    // Cache-Control: private ensures CDN doesn't cache user-specific data,
-    // must-revalidate ensures the client always checks for fresh data.
-    response.headers.set(
-      'Cache-Control',
-      'private, max-age=0, must-revalidate',
-    )
+    response.headers.set('Cache-Control', 'private, max-age=0, must-revalidate')
 
     return response
   } catch (e) {

@@ -794,6 +794,7 @@ export default function MBGPage() {
   }
 
   const resetTask = async (id: string) => {
+    showGlobalLoading()
     try {
       const res = await api(`/api/tasks/${id}/reset`, { method: 'POST' })
       if (!res.ok) { toast('Gagal mereset task', 'error'); return }
@@ -804,6 +805,7 @@ export default function MBGPage() {
       delayedFetch()
     }
     catch { toast('Gagal mereset task', 'error') }
+    finally { hideGlobalLoading() }
   }
 
   const reset = (id: string) => {
@@ -816,7 +818,7 @@ export default function MBGPage() {
   const delTask = (id: string) => {
     setConfirmData({
       title: 'Hapus Task', message: 'Yakin hapus task ini? Log juga ikut terhapus.',
-      onConfirm: async () => { try { await api(`/api/tasks/${id}`, { method: 'DELETE' }); toast('Dihapus!', 'success'); setTasks(prev => prev.filter(t => t.id !== id)); lastWriteTime.current = Date.now(); delayedFetch() } catch { toast('Gagal menghapus task', 'error') }; setConfirmData(null) }
+      onConfirm: async () => { showGlobalLoading(); try { await api(`/api/tasks/${id}`, { method: 'DELETE' }); toast('Dihapus!', 'success'); setTasks(prev => prev.filter(t => t.id !== id)); lastWriteTime.current = Date.now(); delayedFetch() } catch { toast('Gagal menghapus task', 'error') } finally { hideGlobalLoading() }; setConfirmData(null) }
     })
   }
 
@@ -855,10 +857,13 @@ export default function MBGPage() {
   }
 
   const saveNotes = async (id: string, notes: string) => {
+    showGlobalLoading()
     try { const res = await api(`/api/tasks/${id}`, jsonOpts('PUT', { notes })); if (!res.ok) { toast('Gagal menyimpan catatan', 'error'); return } } catch { toast('Gagal menyimpan catatan', 'error') }
+    finally { hideGlobalLoading() }
   }
 
   const togglePin = async (task: Task) => {
+    showGlobalLoading()
     try {
       const res = await api(`/api/tasks/${task.id}`, jsonOpts('PUT', { pinned: !task.pinned }))
       if (!res.ok) { toast('Gagal pin/unpin task', 'error'); return }
@@ -866,10 +871,12 @@ export default function MBGPage() {
       lastWriteTime.current = Date.now()
       delayedFetch()
     } catch { toast('Gagal pin/unpin task', 'error') }
+    finally { hideGlobalLoading() }
   }
 
   /* ===== Fix #8: Duplicate Task ===== */
   const duplicateTask = async (t: Task) => {
+    showGlobalLoading()
     try {
       let config = {}
       try { config = JSON.parse(t.scheduleConfig) } catch { /* use default */ }
@@ -883,11 +890,13 @@ export default function MBGPage() {
       lastWriteTime.current = Date.now()
       delayedFetch()
     } catch { toast('Gagal menduplikat task', 'error') }
+    finally { hideGlobalLoading() }
   }
 
   /* ===== Fix #9: Move Task to Project ===== */
   const confirmMoveTask = async () => {
     if (!moveDialogTask || !moveTargetProjectId) return
+    showGlobalLoading()
     try {
       const res = await api(`/api/tasks/${moveDialogTask.id}`, jsonOpts('PUT', { projectId: moveTargetProjectId }))
       if (!res.ok) { toast('Gagal memindahkan task', 'error'); return }
@@ -899,6 +908,7 @@ export default function MBGPage() {
       lastWriteTime.current = Date.now()
       delayedFetch()
     } catch { toast('Gagal memindahkan task', 'error') }
+    finally { hideGlobalLoading() }
   }
 
   /* ===== Fix #7: Batch Complete All Ready ===== */
@@ -911,6 +921,7 @@ export default function MBGPage() {
       message: `Selesaikan ${readyTasks.length} task siap di "${proj?.name || '?'}"?`,
       onConfirm: async () => {
         setBatchCompleting(projectId)
+        showGlobalLoading()
         try {
           const results = await Promise.allSettled(readyTasks.map(t => api(`/api/tasks/${t.id}/complete`, { method: 'POST' })))
           const ok = results.filter(r => r.status === 'fulfilled' && r.value.ok).length
@@ -928,6 +939,7 @@ export default function MBGPage() {
           setTasks(prev => prev.map(t => okIds.has(t.id) ? { ...t, status: 'selesai' as const, cooldownRemaining: '', cooldownMs: 0 } : t))
         } catch { toast('Gagal batch complete', 'error') }
         setBatchCompleting(null)
+        hideGlobalLoading()
         lastWriteTime.current = Date.now()
         delayedFetch()
         setConfirmData(null)
@@ -942,6 +954,14 @@ export default function MBGPage() {
     }
     return projects
   }, [projects, projectSort])
+
+  /* ===== Memoized active task counts (performance — avoid re-computing on every render) ===== */
+  const activeTasks = useMemo(() => getActiveTasks(tasks), [tasks])
+  const totalSiap = useMemo(() => activeTasks.filter(t => t.status === 'siap').length, [activeTasks])
+  const totalCd = useMemo(() => activeTasks.filter(t => t.status === 'cooldown').length, [activeTasks])
+  const totalDone = useMemo(() => tasks.filter(t => t.status === 'selesai').length, [tasks])
+  const activeDone = useMemo(() => activeTasks.filter(t => t.status === 'selesai').length, [activeTasks])
+  const totalArchived = useMemo(() => tasks.filter(t => t.status === 'selesai' && (t.scheduleType === 'sekali' || t.scheduleType === 'tanggal_spesifik')).length, [tasks])
 
   /* ===== Fix B8: Shared sort utility — pinned first, then priority ===== */
   const sortTasksByPriorityAndPin = (list: Task[]) => {
@@ -989,6 +1009,7 @@ export default function MBGPage() {
   }
 
   const editProject = async (id: string, name: string, color: string) => {
+    showGlobalLoading()
     try {
       const res = await api(`/api/projects/${id}`, jsonOpts('PUT', { name, color }))
       if (!res.ok) { toast('Gagal memperbarui project', 'error'); return }
@@ -999,12 +1020,14 @@ export default function MBGPage() {
       lastWriteTime.current = Date.now()
       delayedFetch()
     } catch { toast('Gagal memperbarui project', 'error') }
+    finally { hideGlobalLoading() }
   }
 
   const delProject = (p: Project) => {
     setConfirmData({
       title: 'Hapus Project', message: `Hapus project "${p.name}"? Semua task di dalamnya juga ikut terhapus.`,
       onConfirm: async () => {
+        showGlobalLoading()
         try {
           await api(`/api/projects/${p.id}`, { method: 'DELETE' })
           toast('Project dihapus!', 'success')
@@ -1027,6 +1050,7 @@ export default function MBGPage() {
           }
           delayedFetch()
         } catch { toast('Gagal', 'error') }
+        finally { hideGlobalLoading() }
         setConfirmData(null)
       }
     })
@@ -1034,6 +1058,7 @@ export default function MBGPage() {
 
   /* ===== Export / Import ===== */
   const doExport = async () => {
+    showGlobalLoading()
     try {
       const r = await api('/api/export')
       if (!r.ok) { toast('Gagal export', 'error'); return }
@@ -1042,10 +1067,12 @@ export default function MBGPage() {
       a.href = u; a.download = `mbg-backup-${new Date().toISOString().slice(0, 10)}.json`; a.click(); URL.revokeObjectURL(u)
       toast('Backup diunduh!', 'success')
     } catch { toast('Gagal mengunduh backup', 'error') }
+    finally { hideGlobalLoading() }
   }
 
   const doImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0]; if (!f) return
+    showGlobalLoading()
     try {
       const d = JSON.parse(await f.text())
       if (!d.tasks) { toast('Format file salah', 'error'); return }
@@ -1055,11 +1082,13 @@ export default function MBGPage() {
       if (res.success) { toast(`Import: ${res.imported.projects} project, ${res.imported.tasks} task`); fetchData() }
       else toast('Gagal: ' + (res.error || ''))
     } catch { toast('File tidak valid', 'error') }
+    finally { hideGlobalLoading() }
     if (fileInputRef.current) fileInputRef.current.value = ''
   }
 
   /* ===== Per-Project Export / Import ===== */
   const doExportProject = async (projectId: string) => {
+    showGlobalLoading()
     try {
       const r = await api(`/api/projects/${projectId}/export`)
       if (!r.ok) { toast('Gagal export', 'error'); return }
@@ -1069,10 +1098,12 @@ export default function MBGPage() {
       a.href = u; a.download = `mbg-project-${d.project?.name || 'export'}-${new Date().toISOString().slice(0, 10)}.json`; a.click(); URL.revokeObjectURL(u)
       toast('Project diunduh!', 'success')
     } catch { toast('Gagal export project', 'error') }
+    finally { hideGlobalLoading() }
   }
 
   const doImportProject = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0]; if (!f) return
+    showGlobalLoading()
     try {
       const d = JSON.parse(await f.text())
       if (!d.project || !d.tasks) { toast('Format file salah', 'error'); return }
@@ -1083,6 +1114,7 @@ export default function MBGPage() {
       if (res.success) { toast(`Import: ${res.taskCount} task ke project "${res.projectName}"`); fetchData() }
       else toast('Gagal: ' + (res.error || ''))
     } catch { toast('File tidak valid', 'error') }
+    finally { hideGlobalLoading() }
     if (fileInputProjectImportRef.current) fileInputProjectImportRef.current.value = ''
     projectImportTargetRef.current = null
   }
@@ -1108,10 +1140,12 @@ export default function MBGPage() {
   }
 
   const saveTelegramBotUsername = async () => {
+    showGlobalLoading()
     try {
       await api('/api/settings', jsonOpts('PUT', { telegramBotUsername: telegramBotUsername.trim() }))
       toast('Bot username disimpan!', 'success')
     } catch { toast('Gagal menyimpan', 'error') }
+    finally { hideGlobalLoading() }
   }
 
   /* ===== Fix B4: Open link FIRST (avoid popup blocker), then complete ===== */
@@ -1201,6 +1235,7 @@ export default function MBGPage() {
   const doShareProject = async () => {
     if (!selectedTaskId || shareLoading) return
     setShareLoading(true)
+    showGlobalLoading()
     try {
       const res = await api(`/api/projects/${selectedTaskId}/share`, { method: 'POST' })
       if (!res.ok) { const err = await res.json().catch(() => ({})); toast('Gagal: ' + (err.error || '')); return }
@@ -1208,7 +1243,7 @@ export default function MBGPage() {
       setShareCode(data.code)
       setShareTaskCount(data.taskCount)
     } catch { toast('Gagal share', 'error') }
-    finally { setShareLoading(false) }
+    finally { setShareLoading(false); hideGlobalLoading() }
   }
 
   const copyShareCode = () => {
@@ -1227,19 +1262,21 @@ export default function MBGPage() {
     const code = importCode.trim().toUpperCase()
     if (code.length !== 6) { toast('Kode harus 6 karakter', 'error'); return }
     setImportChecking(true)
+    showGlobalLoading()
     try {
       const res = await api(`/api/share/${code}`)
       if (!res.ok) { const err = await res.json().catch(() => ({})); toast(err.error || 'Kode tidak valid', 'error'); setImportPreview(null); return }
       const data = await res.json()
       setImportPreview({ project: data.project, taskCount: data.taskCount })
     } catch { toast('Gagal cek kode', 'error') }
-    finally { setImportChecking(false) }
+    finally { setImportChecking(false); hideGlobalLoading() }
   }
 
   const doImportShare = async () => {
     const code = importCode.trim().toUpperCase()
     if (!importPreview || importLoading) return
     setImportLoading(true)
+    showGlobalLoading()
     try {
       const res = await api(`/api/share/${code}/import`, { method: 'POST' })
       if (!res.ok) { const err = await res.json().catch(() => ({})); toast('Gagal: ' + (err.error || '')); return }
@@ -1248,12 +1285,13 @@ export default function MBGPage() {
       setDialogType(null)
       fetchData()
     } catch { toast('Gagal import', 'error') }
-    finally { setImportLoading(false) }
+    finally { setImportLoading(false); hideGlobalLoading() }
   }
 
   /* ===== Notes CRUD ===== */
   const saveNote = async () => {
     if (!noteFormContent.trim()) { toast('Isi catatan dulu!', 'error'); return }
+    showGlobalLoading()
     try {
       if (editingNoteId) {
         await api(`/api/notes/${editingNoteId}`, jsonOpts('PUT', { content: noteFormContent, color: noteFormColor }))
@@ -1265,17 +1303,20 @@ export default function MBGPage() {
       setNoteFormContent(''); setNoteFormColor('#FFFFCC'); setEditingNoteId(null)
       fetchNotes()
     } catch { toast('Gagal simpan catatan', 'error') }
+    finally { hideGlobalLoading() }
   }
 
   const deleteNote = (id: string) => {
     setConfirmData({
       title: 'Hapus Catatan', message: 'Yakin hapus catatan ini?',
-      onConfirm: async () => { try { await api(`/api/notes/${id}`, { method: 'DELETE' }); toast('Catatan dihapus!', 'success'); fetchNotes() } catch { toast('Gagal', 'error') }; setConfirmData(null) }
+      onConfirm: async () => { showGlobalLoading(); try { await api(`/api/notes/${id}`, { method: 'DELETE' }); toast('Catatan dihapus!', 'success'); fetchNotes() } catch { toast('Gagal', 'error') } finally { hideGlobalLoading() }; setConfirmData(null) }
     })
   }
 
   const toggleNotePin = async (note: Note) => {
+    showGlobalLoading()
     try { await api(`/api/notes/${note.id}`, jsonOpts('PUT', { pinned: !note.pinned })); fetchNotes() } catch { toast('Gagal', 'error') }
+    finally { hideGlobalLoading() }
   }
 
   const openEditNote = (note: Note) => {
@@ -1306,6 +1347,7 @@ export default function MBGPage() {
     e.preventDefault()
     if (!loginUsername.trim() || !loginPassword.trim()) { setAuthError('Username dan password wajib diisi'); return }
     setAuthLoading(true)
+    showGlobalLoading()
     setAuthError('')
     try {
       const res = await api('/api/auth/login', jsonOpts('POST', { username: loginUsername.trim(), password: loginPassword }))
@@ -1326,7 +1368,7 @@ export default function MBGPage() {
         setAuthError(data.error || 'Login gagal')
       }
     } catch { setAuthError('Gagal terhubung ke server') }
-    finally { setAuthLoading(false) }
+    finally { setAuthLoading(false); hideGlobalLoading() }
   }
 
   const handleRegister = async (e: React.FormEvent) => {
@@ -1336,6 +1378,7 @@ export default function MBGPage() {
     if (registerUsername.trim().length < 3) { setAuthError('Username minimal 3 karakter'); return }
     if (registerPassword.length < 6) { setAuthError('Password minimal 6 karakter'); return }
     setAuthLoading(true)
+    showGlobalLoading()
     setAuthError('')
     try {
       const res = await api('/api/auth/register', jsonOpts('POST', {
@@ -1359,7 +1402,7 @@ export default function MBGPage() {
         setAuthError(data.error || 'Registrasi gagal')
       }
     } catch { setAuthError('Gagal terhubung ke server') }
-    finally { setAuthLoading(false) }
+    finally { setAuthLoading(false); hideGlobalLoading() }
   }
 
   /* ===== Admin Panel ===== */
@@ -1415,6 +1458,7 @@ export default function MBGPage() {
 
   /* ===== Settings ===== */
   const saveSettings = async () => {
+    showGlobalLoading()
     try {
       const res = await api('/api/settings', jsonOpts('PUT', { timezone: formTimezone, timeFormat: formTimeFormat, autoExpandSiap: formAutoExpandSiap, autoCompleteLink: formAutoCompleteLink, telegramNotifEnabled: formTelegramNotif, browserNotifEnabled: formBrowserNotif, pomodoroDuration: formPomodoroDuration, audioAlertEnabled: formAudioAlertEnabled }))
       if (!res.ok) { toast('Gagal', 'error'); return }
@@ -1425,6 +1469,7 @@ export default function MBGPage() {
       toast('Disimpan!', 'success'); setDialogType(null); fetchData()
     }
     catch { toast('Gagal', 'error') }
+    finally { hideGlobalLoading() }
   }
 
   /* ===== Openers ===== */
@@ -1550,6 +1595,7 @@ export default function MBGPage() {
   /* ===== Template CRUD ===== */
   const saveTemplate = async () => {
     if (!formTemplateName.trim()) { toast('Nama template wajib diisi!', 'error'); return }
+    showGlobalLoading()
     try {
       if (editingTemplate) {
         await api(`/api/templates/${editingTemplate.id}`, jsonOpts('PUT', {
@@ -1569,14 +1615,17 @@ export default function MBGPage() {
       setEditingTemplate(null); setTemplateDialogOpen(false)
       fetchTemplates()
     } catch { toast('Gagal menyimpan template', 'error') }
+    finally { hideGlobalLoading() }
   }
 
   const deleteTemplate = (id: string) => {
     setConfirmData({
       title: 'Hapus Template', message: 'Yakin hapus template ini?',
       onConfirm: async () => {
+        showGlobalLoading()
         try { await api(`/api/templates/${id}`, { method: 'DELETE' }); toast('Template dihapus!', 'success'); fetchTemplates() }
         catch { toast('Gagal menghapus', 'error') }
+        finally { hideGlobalLoading() }
         setConfirmData(null)
       }
     })
@@ -2313,13 +2362,7 @@ export default function MBGPage() {
     </div>
   )
 
-  // Active counts: exclude completed 'sekali' from main view stats
-  const activeTasks = getActiveTasks(tasks)
-  const totalSiap = activeTasks.filter(t => t.status === 'siap').length
-  const totalCd = activeTasks.filter(t => t.status === 'cooldown').length
-  const totalDone = tasks.filter(t => t.status === 'selesai').length
-  const activeDone = activeTasks.filter(t => t.status === 'selesai').length
-  const totalArchived = tasks.filter(t => t.status === 'selesai' && (t.scheduleType === 'sekali' || t.scheduleType === 'tanggal_spesifik')).length
+  // Active counts — already memoized above, just get addDialogProject here
   const addDialogProject = projects.find(p => p.id === formProjectId)
 
   /* Fix #17: Check if all folders are empty under active filter */
@@ -2510,7 +2553,7 @@ export default function MBGPage() {
 
         {/* Status bar */}
         <div className="win95-statusbar">
-          <div className="win95-statusbar-section">{projects.length} folder, {activeTasks.length} aktif{totalArchived > 0 && <span style={{ color: '#808080' }}> (+{totalArchived} arsip)</span>}{searchQuery && <span style={{ color: '#000080' }}> | Cari...</span>}</div>
+          <div className="win95-statusbar-section">{projects.length} folder, {activeTasks.length} aktif{totalArchived > 0 && <span style={{ color: '#808080' }}> (+{totalArchived} arsip)</span>}{searchQuery && <span style={{ color: '#000080' }}> | Cari...</span>}{globalLoading && <span className="syncing-indicator"> ⟳ sinkronisasi...</span>}</div>
           <span ref={clockRef} className="win95-statusbar-section fixed" title="Jam saat ini" data-fmt={settings.timeFormat || '24'}>🕐 </span>
           {telegramLinked && <div className="win95-statusbar-section fixed" title="Telegram">📱</div>}
           <div className="win95-statusbar-section fixed">{settings.timezone || 'WIB'}</div>
@@ -2526,7 +2569,7 @@ export default function MBGPage() {
           <div className="win95-dialog" onClick={e => e.stopPropagation()}>
             <div className="win95-titlebar"><span className="win95-titlebar-text">📁 Buat Project Baru</span><button className="win95-titlebar-btn" onClick={() => setDialogType(null)}>✕</button></div>
             <div className="win95-dialog-body">
-              <div className="win95-field"><label>Nama Project *</label><input type="text" className="win95-input" value={formProjectName} onChange={e => setFormProjectName(e.target.value)} placeholder="Contoh: LayerZero" autoFocus onKeyDown={e => { if (e.key === 'Enter' && formProjectName.trim()) { addProject(formProjectName, formProjectColor); setDialogType(null) } }} /></div>
+              <div className="win95-field"><label>Nama Project *</label><input type="text" className="win95-input" value={formProjectName} onChange={e => setFormProjectName(e.target.value)} placeholder="Contoh: LayerZero" autoFocus onKeyDown={e => { if (e.key === 'Enter' && formProjectName.trim() && !savingProject) { addProject(formProjectName, formProjectColor).then(() => setDialogType(null)) } }} /></div>
               <div className="win95-field"><label>Warna</label>
                 <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                   {PROJECT_COLORS.map(c => (
@@ -2537,7 +2580,7 @@ export default function MBGPage() {
               </div>
             </div>
             <div className="win95-dialog-footer">
-              <button className="win95-btn primary" disabled={savingProject} onClick={() => { if (formProjectName.trim() && !savingProject) { addProject(formProjectName, formProjectColor); setDialogType(null) } }}>
+              <button className="win95-btn primary" disabled={savingProject} onClick={() => { if (formProjectName.trim() && !savingProject) { addProject(formProjectName, formProjectColor).then(() => setDialogType(null)) } }}>
                 {savingProject ? <span className="btn-loading-text">⏳ Membuat...</span> : 'Buat'}
               </button>
               <button className="win95-btn" disabled={savingProject} onClick={() => setDialogType(null)}>Batal</button>
@@ -2604,8 +2647,8 @@ export default function MBGPage() {
               )}
             </div>
             <div className="win95-dialog-footer">
-              <button className="win95-btn primary" onClick={saveTask}>OK</button>
-              <button className="win95-btn" onClick={() => setDialogType(null)}>Batal</button>
+              <button className="win95-btn primary" disabled={savingTask} onClick={saveTask}>{savingTask ? <span className="btn-loading-text">⏳ Menyimpan...</span> : 'OK'}</button>
+              <button className="win95-btn" disabled={savingTask} onClick={() => setDialogType(null)}>Batal</button>
               <div style={{ flex: 1, fontSize: 9, color: '#808080', textAlign: 'right' }}>Ctrl+Enter untuk simpan</div>
             </div>
           </div>

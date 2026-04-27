@@ -1207,6 +1207,55 @@ body {
   50% { opacity: 0.3; }
 }
 
+/* ===== Global Loading Bar — thin animated bar at top of window ===== */
+.global-loading-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  z-index: 10000;
+  background: var(--win95-bg);
+  overflow: hidden;
+}
+
+.global-loading-bar-fill {
+  width: 40%;
+  height: 100%;
+  background: linear-gradient(90deg, var(--win95-highlight), var(--win95-siap), var(--win95-highlight));
+  background-size: 200% 100%;
+  animation: global-bar-slide 0.8s linear infinite;
+}
+
+@keyframes global-bar-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(350%); }
+}
+
+/* ===== Button loading state ===== */
+.btn-loading-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: wait !important;
+}
+
+/* ===== Syncing indicator on status bar ===== */
+.syncing-indicator {
+  color: var(--win95-highlight);
+  animation: syncing-blink 1s step-end infinite;
+  margin-left: 4px;
+}
+
+@keyframes syncing-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
 /* ===== Fix #9: Move dialog ===== */
 .move-dialog {
   max-width: 340px;
