@@ -1024,7 +1024,19 @@ export default function MBGPage() {
   const delTask = (id: string) => {
     setConfirmData({
       title: 'Hapus Task', message: 'Yakin hapus task ini? Log juga ikut terhapus.',
-      onConfirm: async () => { showGlobalLoading(); try { await api(`/api/tasks/${id}`, { method: 'DELETE' }); toast('Dihapus!', 'success'); setTasks(prev => prev.filter(t => t.id !== id)); lastWriteTime.current = Date.now(); delayedFetch() } catch { toast('Gagal menghapus task', 'error') } finally { hideGlobalLoading() }; setConfirmData(null) }
+      onConfirm: async () => {
+        // Optimistic delete FIRST — prevent sync from re-adding it
+        setTasks(prev => prev.filter(t => t.id !== id))
+        lastWriteTime.current = Date.now()
+        showGlobalLoading()
+        try {
+          const res = await api(`/api/tasks/${id}`, { method: 'DELETE' })
+          if (!res.ok) { toast('Gagal menghapus task', 'error'); lastWriteTime.current = 0; delayedFetch(); return }
+          toast('Dihapus!', 'success')
+          delayedFetch()
+        } catch { toast('Gagal menghapus task', 'error'); lastWriteTime.current = 0; delayedFetch() }
+        finally { hideGlobalLoading(); setConfirmData(null) }
+      }
     })
   }
 
@@ -1073,6 +1085,9 @@ export default function MBGPage() {
       } : t))
     }
 
+    // CRITICAL: Set write timestamp IMMEDIATELY to prevent periodic sync from overwriting optimistic state
+    lastWriteTime.current = Date.now()
+
     // Close dialog immediately — user can already see the change
     if (!skipDialogClose) {
       setDialogType(null)
@@ -1092,6 +1107,7 @@ export default function MBGPage() {
         if (!res.ok) {
           // Revert optimistic update on failure
           if (tempId) setTasks(prev => prev.filter(t => t.id !== tempId))
+          lastWriteTime.current = 0
           const err = await res.json().catch(() => ({})); toast('Gagal: ' + (err.error || res.statusText), 'error'); return
         }
         const data = await res.json()
@@ -1104,6 +1120,7 @@ export default function MBGPage() {
         res = await fetch(`/api/tasks/${editTaskId}`, makeOpts('PUT'))
         if (!res.ok) {
           // Revert on failure — re-fetch from server
+          lastWriteTime.current = 0
           const err = await res.json().catch(() => ({})); toast('Gagal: ' + (err.error || res.statusText), 'error')
           delayedFetch()
           return
@@ -1116,6 +1133,7 @@ export default function MBGPage() {
       console.error(e)
       // Revert optimistic add on network error
       if (isAdd && tempId) setTasks(prev => prev.filter(t => t.id !== tempId))
+      lastWriteTime.current = 0
       toast('Gagal menyimpan task', 'error')
     }
     finally { setSavingTask(false); hideGlobalLoading() }
@@ -1128,51 +1146,94 @@ export default function MBGPage() {
   }
 
   const togglePin = async (task: Task) => {
+    // Optimistic update first
+    setTasks(prev => prev.map(t => t.id === task.id ? { ...t, pinned: !task.pinned } : t))
+    lastWriteTime.current = Date.now()
     showGlobalLoading()
     try {
       const res = await api(`/api/tasks/${task.id}`, jsonOpts('PUT', { pinned: !task.pinned }))
-      if (!res.ok) { toast('Gagal pin/unpin task', 'error'); return }
-      setTasks(prev => prev.map(t => t.id === task.id ? { ...t, pinned: !task.pinned } : t))
-      lastWriteTime.current = Date.now()
+      if (!res.ok) {
+        toast('Gagal pin/unpin task', 'error')
+        // Revert
+        setTasks(prev => prev.map(t => t.id === task.id ? { ...t, pinned: task.pinned } : t))
+        lastWriteTime.current = 0
+        delayedFetch()
+        return
+      }
       delayedFetch()
-    } catch { toast('Gagal pin/unpin task', 'error') }
+    } catch {
+      toast('Gagal pin/unpin task', 'error')
+      setTasks(prev => prev.map(t => t.id === task.id ? { ...t, pinned: task.pinned } : t))
+      lastWriteTime.current = 0
+    }
     finally { hideGlobalLoading() }
   }
 
   /* ===== Fix #8: Duplicate Task ===== */
   const duplicateTask = async (t: Task) => {
+    // Optimistic update first — create temp copy immediately
+    let config = {}
+    try { config = JSON.parse(t.scheduleConfig) } catch { /* use default */ }
+    const tempId = 'temp-' + Date.now()
+    const dupTask: Task = {
+      id: tempId, name: t.name + ' (copy)', description: t.description, link: t.link,
+      scheduleType: t.scheduleType, scheduleConfig: typeof config === 'string' ? config : JSON.stringify(config),
+      notes: t.notes, pinned: false, priority: t.priority || 'medium',
+      status: t.status === 'selesai' && (t.scheduleType === 'sekali' || t.scheduleType === 'tanggal_spesifik') ? 'selesai' : 'siap',
+      nextReadyAt: t.nextReadyAt, lastCompletedAt: t.lastCompletedAt,
+      cooldownRemaining: t.cooldownRemaining, cooldownMs: t.cooldownMs,
+      project: t.project, createdAt: new Date().toISOString()
+    }
+    setTasks(prev => [dupTask, ...prev])
+    if (t.project?.id) setExpandedProjects(prev => new Set(prev).add(t.project!.id))
+    lastWriteTime.current = Date.now()
     showGlobalLoading()
     try {
-      let config = {}
-      try { config = JSON.parse(t.scheduleConfig) } catch { /* use default */ }
       const res = await api('/api/tasks', jsonOpts('POST', {
         name: t.name + ' (copy)', description: t.description, link: t.link,
         scheduleType: t.scheduleType, scheduleConfig: config,
         projectId: t.project?.id, priority: t.priority || 'medium'
       }))
-      if (!res.ok) { toast('Gagal menduplikat task', 'error'); return }
+      if (!res.ok) {
+        setTasks(prev => prev.filter(task => task.id !== tempId))
+        lastWriteTime.current = 0
+        toast('Gagal menduplikat task', 'error'); return
+      }
+      const data = await res.json()
       toast('Task diduplikat!', 'success')
+      if (data.id) setTasks(prev => prev.map(task => task.id === tempId ? { ...task, id: data.id } : task))
       lastWriteTime.current = Date.now()
       delayedFetch()
-    } catch { toast('Gagal menduplikat task', 'error') }
+    } catch {
+      setTasks(prev => prev.filter(task => task.id !== tempId))
+      lastWriteTime.current = 0
+      toast('Gagal menduplikat task', 'error')
+    }
     finally { hideGlobalLoading() }
   }
 
   /* ===== Fix #9: Move Task to Project ===== */
   const confirmMoveTask = async () => {
     if (!moveDialogTask || !moveTargetProjectId) return
+    // Optimistic update FIRST
+    const targetProj = projects.find(p => p.id === moveTargetProjectId)
+    const taskId = moveDialogTask.id
+    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, project: targetProj ? { id: targetProj.id, name: targetProj.name, color: targetProj.color } : null } : t))
+    if (targetProj) setExpandedProjects(prev => new Set(prev).add(targetProj.id))
+    lastWriteTime.current = Date.now()
+    setMoveDialogTask(null); setMoveTargetProjectId(null)
     showGlobalLoading()
     try {
-      const res = await api(`/api/tasks/${moveDialogTask.id}`, jsonOpts('PUT', { projectId: moveTargetProjectId }))
-      if (!res.ok) { toast('Gagal memindahkan task', 'error'); return }
+      const res = await api(`/api/tasks/${taskId}`, jsonOpts('PUT', { projectId: moveTargetProjectId }))
+      if (!res.ok) {
+        toast('Gagal memindahkan task', 'error')
+        lastWriteTime.current = 0
+        delayedFetch()
+        return
+      }
       toast('Task dipindahkan!', 'success')
-      // Optimistic update: update task's project locally
-      const targetProj = projects.find(p => p.id === moveTargetProjectId)
-      setTasks(prev => prev.map(t => t.id === moveDialogTask.id ? { ...t, project: targetProj ? { id: targetProj.id, name: targetProj.name, color: targetProj.color } : null } : t))
-      setMoveDialogTask(null); setMoveTargetProjectId(null)
-      lastWriteTime.current = Date.now()
       delayedFetch()
-    } catch { toast('Gagal memindahkan task', 'error') }
+    } catch { toast('Gagal memindahkan task', 'error'); lastWriteTime.current = 0; delayedFetch() }
     finally { hideGlobalLoading() }
   }
 
@@ -1185,6 +1246,10 @@ export default function MBGPage() {
       title: 'Complete Semua Siap',
       message: `Selesaikan ${readyTasks.length} task siap di "${proj?.name || '?'}"?`,
       onConfirm: async () => {
+        const readyIds = new Set(readyTasks.map(t => t.id))
+        // Optimistic: mark all as done immediately
+        setTasks(prev => prev.map(t => readyIds.has(t.id) ? { ...t, status: 'selesai' as const, cooldownRemaining: '', cooldownMs: 0 } : t))
+        lastWriteTime.current = Date.now()
         setBatchCompleting(projectId)
         showGlobalLoading()
         try {
@@ -1193,21 +1258,25 @@ export default function MBGPage() {
           const fail = results.length - ok
           if (fail === 0) toast(`${ok} task selesai!`)
           else toast(`${ok} berhasil, ${fail} gagal`)
-          // Only mark tasks whose API calls actually succeeded
-          const okIds = new Set<string>()
-          results.forEach((r, i) => {
-            if (r.status === 'fulfilled') {
-              const val = r.value
-              if (val && val.ok) okIds.add(readyTasks[i].id)
+          // Revert any that actually failed
+          if (fail > 0) {
+            const okIds = new Set<string>()
+            results.forEach((r, i) => {
+              if (r.status === 'fulfilled') {
+                const val = r.value
+                if (val && val.ok) okIds.add(readyTasks[i].id)
+              }
+            })
+            const failedIds = readyIds
+            okIds.forEach(id => failedIds.delete(id))
+            if (failedIds.size > 0) {
+              setTasks(prev => prev.map(t => failedIds.has(t.id) ? { ...t, status: 'siap' as const } : t))
             }
-          })
-          setTasks(prev => prev.map(t => okIds.has(t.id) ? { ...t, status: 'selesai' as const, cooldownRemaining: '', cooldownMs: 0 } : t))
-        } catch { toast('Gagal batch complete', 'error') }
-        setBatchCompleting(null)
-        hideGlobalLoading()
-        lastWriteTime.current = Date.now()
-        delayedFetch()
-        setConfirmData(null)
+          }
+          lastWriteTime.current = Date.now()
+          delayedFetch()
+        } catch { toast('Gagal batch complete', 'error'); lastWriteTime.current = 0; delayedFetch() }
+        finally { setBatchCompleting(null); hideGlobalLoading(); setConfirmData(null) }
       }
     })
   }
@@ -1251,6 +1320,8 @@ export default function MBGPage() {
     const tempId = 'temp-' + Date.now()
     setProjects(prev => [...prev, { id: tempId, name, color, _count: { tasks: 0 } }])
     setExpandedProjects(prev => new Set(prev).add(tempId))
+    // CRITICAL: Set write timestamp IMMEDIATELY to prevent periodic sync from overwriting optimistic state
+    lastWriteTime.current = Date.now()
     setSavingProject(true)
     showGlobalLoading()
     try {
@@ -1260,6 +1331,7 @@ export default function MBGPage() {
         // Revert optimistic update on failure
         setProjects(prev => prev.filter(p => p.id !== tempId))
         setExpandedProjects(prev => { const n = new Set(prev); n.delete(tempId); return n })
+        lastWriteTime.current = 0 // Reset — allow next sync to fetch fresh data
         const err = await res.json().catch(() => ({})); toast('Gagal: ' + (err.error || res.statusText), 'error'); return
       }
       const data = await res.json()
@@ -1273,22 +1345,23 @@ export default function MBGPage() {
       console.error(e)
       setProjects(prev => prev.filter(p => p.id !== tempId))
       setExpandedProjects(prev => { const n = new Set(prev); n.delete(tempId); return n })
+      lastWriteTime.current = 0
       toast('Gagal membuat project', 'error')
     } finally { setSavingProject(false); hideGlobalLoading() }
   }
 
   const editProject = async (id: string, name: string, color: string) => {
+    // Optimistic update first
+    setProjects(prev => prev.map(p => p.id === id ? { ...p, name, color } : p))
+    lastWriteTime.current = Date.now()
+    setDialogType(null)
     showGlobalLoading()
     try {
       const res = await api(`/api/projects/${id}`, jsonOpts('PUT', { name, color }))
-      if (!res.ok) { toast('Gagal memperbarui project', 'error'); return }
+      if (!res.ok) { toast('Gagal memperbarui project', 'error'); lastWriteTime.current = 0; delayedFetch(); return }
       toast('Project diperbarui!', 'success')
-      // Optimistic update: update project in local state immediately
-      setProjects(prev => prev.map(p => p.id === id ? { ...p, name, color } : p))
-      setDialogType(null)
-      lastWriteTime.current = Date.now()
       delayedFetch()
-    } catch { toast('Gagal memperbarui project', 'error') }
+    } catch { toast('Gagal memperbarui project', 'error'); lastWriteTime.current = 0; delayedFetch() }
     finally { hideGlobalLoading() }
   }
 
@@ -1296,31 +1369,29 @@ export default function MBGPage() {
     setConfirmData({
       title: 'Hapus Project', message: `Hapus project "${p.name}"? Semua task di dalamnya juga ikut terhapus.`,
       onConfirm: async () => {
+        // Optimistic delete FIRST — prevent sync from re-adding it
+        const deletedTaskIds = new Set(tasks.filter(t => t.project?.id === p.id).map(t => t.id))
+        setProjects(prev => prev.filter(proj => proj.id !== p.id))
+        setTasks(prev => prev.filter(t => t.project?.id !== p.id))
+        setExpandedProjects(prev => { const n = new Set(prev); n.delete(p.id); return n })
+        if (selectedTaskId && deletedTaskIds.has(selectedTaskId)) {
+          setSelectedTaskId(null)
+          detailRef.current = null
+        }
+        if (dialogType === 'edit' || dialogType === 'detail') {
+          const currentTask = tasks.find(t => t.id === selectedTaskId)
+          if (currentTask?.project?.id === p.id) {
+            setDialogType(null)
+          }
+        }
+        lastWriteTime.current = Date.now()
         showGlobalLoading()
         try {
           await api(`/api/projects/${p.id}`, { method: 'DELETE' })
           toast('Project dihapus!', 'success')
-          // Optimistic update: remove project from local state immediately
-          setProjects(prev => prev.filter(proj => proj.id !== p.id))
-          setTasks(prev => prev.filter(t => t.project?.id !== p.id))
-          setExpandedProjects(prev => { const n = new Set(prev); n.delete(p.id); return n })
-          // BUG-FIX: clear selectedTaskId jika task-nya termasuk yang dihapus
-          const deletedTaskIds = new Set(tasks.filter(t => t.project?.id === p.id).map(t => t.id))
-          if (selectedTaskId && deletedTaskIds.has(selectedTaskId)) {
-            setSelectedTaskId(null)
-            detailRef.current = null
-          }
-          // BUG-FIX: tutup dialog jika sedang edit/detail task yang dihapus
-          if (dialogType === 'edit' || dialogType === 'detail') {
-            const currentTask = tasks.find(t => t.id === selectedTaskId)
-            if (currentTask?.project?.id === p.id) {
-              setDialogType(null)
-            }
-          }
           delayedFetch()
-        } catch { toast('Gagal', 'error') }
-        finally { hideGlobalLoading() }
-        setConfirmData(null)
+        } catch { toast('Gagal menghapus project', 'error'); lastWriteTime.current = 0; delayedFetch() }
+        finally { hideGlobalLoading(); setConfirmData(null) }
       }
     })
   }
