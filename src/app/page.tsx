@@ -1070,7 +1070,7 @@ export default function MBGPage() {
           lastCompletedAt: data.task.lastCompletedAt || null,
           cooldownRemaining: data.task.cooldownRemaining || '',
           cooldownMs: data.task.cooldownMs || 0,
-          logCount: data.task.logCount ?? (t.logCount || 0) + 1,
+          logCount: data.task.logCount ?? ((t as unknown as Record<string, unknown>).logCount as number || 0) + 1,
         } : t))
       }
       toast('Task selesai!', 'success')
