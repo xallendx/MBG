@@ -33,6 +33,7 @@ body {
   align-items: flex-start;
   padding: 10px;
   -webkit-text-size-adjust: 100%;
+  overflow-x: hidden;
 }
 
 /* Desktop container - simulates Win95 desktop */
@@ -753,8 +754,8 @@ body {
   .task-name { font-size: 12px; }
   .task-schedule-info { font-size: 10px; }
   .task-cd-timer { font-size: 11px; }
-  .work-btn { height: 28px; font-size: 11px; padding: 0 8px; min-width: 70px; }
-  .dash-complete-btn { width: 28px; height: 28px; font-size: 14px; }
+  .work-btn { height: 34px; font-size: 11px; padding: 0 8px; min-width: 70px; }
+  .dash-complete-btn { width: 32px; height: 32px; font-size: 14px; }
   .dash-task-item { padding: 6px 8px; min-height: 44px; }
   .dash-task-name { font-size: 12px; }
   .win95-context-item { padding: 8px 20px 8px 12px; font-size: 13px; min-height: 44px; display: flex; align-items: center; }
@@ -795,7 +796,7 @@ body {
 
   /* Touch target: work/action buttons */
   .work-btn {
-    height: 32px;
+    height: 36px;
     font-size: 11px;
     padding: 0 8px;
     min-width: 60px;
@@ -813,8 +814,8 @@ body {
 
   /* Touch target: dashboard complete buttons */
   .dash-complete-btn {
-    width: 32px;
-    height: 32px;
+    width: 36px;
+    height: 36px;
     font-size: 16px;
   }
 
@@ -880,6 +881,39 @@ body {
     font-size: 11px;
   }
   .tree-task-count {
+    display: none;
+  }
+
+  /* Touch target: tree add button */
+  .tree-add-btn {
+    width: 32px;
+    height: 32px;
+    font-size: 18px;
+    min-width: 32px;
+  }
+
+  /* Touch target: checkbox — larger for mobile */
+  .task-checkbox {
+    width: 20px;
+    height: 20px;
+    min-width: 20px;
+  }
+  .task-checkbox:checked::after {
+    font-size: 14px;
+  }
+
+  /* Notes panel full width on small mobile */
+  .notes-panel-fixed {
+    width: 100vw !important;
+  }
+
+  /* Status bar fixed sections smaller on small mobile */
+  .win95-statusbar-section.fixed {
+    min-width: 50px;
+  }
+
+  /* Hide keyboard shortcut hints on mobile */
+  .desktop-only-hint {
     display: none;
   }
 

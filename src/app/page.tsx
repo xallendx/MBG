@@ -2508,9 +2508,9 @@ export default function MBGPage() {
           <button className={`win95-toolbar-btn`} style={{ border: activeTab === 'siap' ? '1px inset' : '1px solid transparent', fontSize: 11 }} onClick={() => { setActiveTab('siap'); setDashFilterQuery('') }}>✅ Siap <span className="filter-count" style={{ color: 'var(--win95-siap)' }}>({badgeSiap})</span></button>
           <button className={`win95-toolbar-btn`} style={{ border: activeTab === 'cooldown' ? '1px inset' : '1px solid transparent', fontSize: 11 }} onClick={() => { setActiveTab('cooldown'); setDashFilterQuery('') }}>⏳ CD <span className="filter-count" style={{ color: 'var(--win95-cd)' }}>({badgeCd})</span></button>
           <button className={`win95-toolbar-btn`} style={{ border: activeTab === 'selesai' ? '1px inset' : '1px solid transparent', fontSize: 11 }} onClick={() => { setActiveTab('selesai'); setDashFilterQuery('') }}>✔️ Done <span className="filter-count">({badgeDone})</span></button>
-          <input type="text" className="win95-input" placeholder="Cari task... (F)" value={dashFilterQuery} onChange={e => { setDashFilterQuery(e.target.value); setSearchQuery(e.target.value) }} id="search-input" style={{ flex: 1, minWidth: 100, fontSize: 11 }} />
+          <input type="text" className="win95-input" placeholder="Cari task... (F)" value={dashFilterQuery} onChange={e => { setDashFilterQuery(e.target.value); setSearchQuery(e.target.value) }} id="search-input" style={{ flex: 1, minWidth: 'min(100px, 30vw)', fontSize: 11 }} />
           <div className="win95-toolbar-sep" />
-          <select className="win95-select" value={dashFilterProject || ''} onChange={e => setDashFilterProject(e.target.value || null)} style={{ fontSize: 11, minWidth: 130 }}>
+          <select className="win95-select" value={dashFilterProject || ''} onChange={e => setDashFilterProject(e.target.value || null)} style={{ fontSize: 11, minWidth: 'min(130px, 35vw)' }}>
             <option value="">📋 Semua Project</option>
             {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
             {tasks.some(t => !t.project) && <option value="__no_project__">📎 Tanpa Project</option>}
@@ -2757,7 +2757,7 @@ export default function MBGPage() {
   /* ===== LOGIN / REGISTER SCREEN ===== */
   if (!authenticated && !loading) return (
     <div className="mbg-desktop">
-      <div className="win95-window" style={{ maxWidth: 380, margin: '80px auto 0' }}>
+      <div className="win95-window" style={{ maxWidth: 'min(380px, 95vw)', margin: '80px auto 0' }}>
         <div className="win95-titlebar"><span className="win95-titlebar-text">MBG - Airdrop Task Manager</span></div>
         <div className="win95-content" style={{ padding: 16 }}>
           <div style={{ textAlign: 'center', marginBottom: 12 }}>
@@ -2861,7 +2861,7 @@ export default function MBGPage() {
                 <>
                   {/* Invisible overlay: clicks here close the profile menu */}
                   <div style={{ position: 'fixed', inset: 0, zIndex: 9998 }} onClick={() => setProfileMenuOpen(false)} onPointerDown={e => e.stopPropagation()} />
-                  <div ref={profileDropRef} className="win95-dropdown" style={{ position: 'absolute', right: 0, top: '100%', zIndex: 9999, minWidth: 180 }} onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
+                  <div ref={profileDropRef} className="win95-dropdown" style={{ position: 'absolute', right: 0, top: '100%', zIndex: 9999, minWidth: 'min(180px, 70vw)' }} onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
                     <div className="win95-dropdown-item" style={{ cursor: 'default', opacity: 0.9, fontSize: 11, fontWeight: 'bold' }}>{authUser?.displayName || authUser?.username || 'User'}</div>
                     <div className="win95-dropdown-item" style={{ cursor: 'default', opacity: 0.5, fontSize: 10 }}>@{authUser?.username} | {projects.length} project, {activeTasks.length} aktif{totalArchived > 0 ? ` (+${totalArchived} arsip)` : ''}</div>
                     {isAdmin && <div className="win95-dropdown-item" style={{ cursor: 'default', opacity: 0.7, fontSize: 10 }}>👑 ADMIN</div>}
@@ -3122,7 +3122,7 @@ export default function MBGPage() {
             <div className="win95-dialog-footer">
               <button className="win95-btn primary" disabled={!formName.trim() || savingTask} onClick={() => saveTask()} style={savingTask ? { opacity: 0.6, cursor: 'wait' } : {}}>{savingTask ? '⏳ Menyimpan...' : 'OK'}</button>
               <button className="win95-btn" onClick={() => setDialogType(null)}>Batal</button>
-              <div style={{ flex: 1, fontSize: 9, color: '#808080', textAlign: 'right' }}>Ctrl+Enter untuk simpan</div>
+              <div className="desktop-only-hint" style={{ flex: 1, fontSize: 9, color: '#808080', textAlign: 'right' }}>Ctrl+Enter untuk simpan</div>
             </div>
           </div>
         </div>
@@ -3246,7 +3246,7 @@ export default function MBGPage() {
       {/* ===== TELEGRAM DIALOG ===== */}
       {dialogType === 'telegram' && (
         <div className="win95-dialog-overlay" role="presentation" onClick={() => setDialogType(null)}>
-          <div className="win95-dialog" role="dialog" aria-modal="true" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()} style={{ maxWidth: 420 }}>
+          <div className="win95-dialog" role="dialog" aria-modal="true" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()} style={{ maxWidth: 'min(420px, 95vw)' }}>
             <div className="win95-titlebar"><span className="win95-titlebar-text">📱 Telegram</span><button className="win95-titlebar-btn" aria-label="Tutup" onClick={() => setDialogType(null)}>✕</button></div>
             <div className="win95-dialog-body">
               {/* Connection Status */}
@@ -3370,7 +3370,7 @@ export default function MBGPage() {
       {/* ===== CONFIRM DIALOG ===== */}
       {confirmData && (
         <div className="win95-dialog-overlay" role="presentation" onClick={() => { if (!confirmLoading) setConfirmData(null) }}>
-          <div className="win95-dialog" role="dialog" aria-modal="true" style={{ maxWidth: 350 }} onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
+          <div className="win95-dialog" role="dialog" aria-modal="true" style={{ maxWidth: 'min(350px, 95vw)' }} onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
             <div className="win95-titlebar"><span className="win95-titlebar-text">{confirmData.title}</span>{!confirmLoading && <button className="win95-titlebar-btn" aria-label="Tutup" onClick={() => setConfirmData(null)}>✕</button>}</div>
             <div className="win95-dialog-body" style={{ display: 'flex', alignItems: 'flex-start' }}><span className="win95-confirm-icon">⚠️</span><span className="win95-confirm-text">{confirmData.message}</span></div>
             <div className="win95-dialog-footer">
@@ -3515,7 +3515,7 @@ export default function MBGPage() {
       {/* ===== TEMPLATE TASK DIALOG ===== */}
       {dialogType === 'templates' && (
         <div className="win95-dialog-overlay" role="presentation" onClick={() => setDialogType(null)}>
-          <div className="win95-dialog" role="dialog" aria-modal="true" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()} style={{ maxWidth: 500, maxHeight: '85vh', overflowY: 'auto' }}>
+          <div className="win95-dialog" role="dialog" aria-modal="true" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()} style={{ maxWidth: 'min(500px, 95vw)', maxHeight: '85vh', overflowY: 'auto' }}>
             <div className="win95-titlebar"><span className="win95-titlebar-text">📋 Template Task</span><button className="win95-titlebar-btn" aria-label="Tutup" onClick={() => setDialogType(null)}>✕</button></div>
             <div className="win95-dialog-body">
               {templateDialogOpen ? (
@@ -3736,7 +3736,7 @@ export default function MBGPage() {
       {/* ===== ADMIN PANEL DIALOG ===== */}
       {dialogType === 'admin' && isAdmin && (
         <div className="win95-dialog-overlay" role="presentation" onClick={() => setDialogType(null)}>
-          <div className="win95-dialog" role="dialog" aria-modal="true" style={{ maxWidth: 700, width: '95vw', maxHeight: '85vh' }} onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
+          <div className="win95-dialog" role="dialog" aria-modal="true" style={{ maxWidth: 'min(700px, 95vw)', width: '95vw', maxHeight: '85vh' }} onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
             <div className="win95-titlebar">
               <span className="win95-titlebar-text">👑 Panel Admin</span>
               <button className="win95-titlebar-btn" aria-label="Tutup" onClick={() => setDialogType(null)}>✕</button>
@@ -3863,7 +3863,7 @@ export default function MBGPage() {
 
       {/* ===== NOTES PANEL (side panel like Notepad) ===== */}
       {notesPanelOpen && (
-        <div style={{ position: 'fixed', top: 0, right: 0, width: 320, height: '100vh', zIndex: 5000, display: 'flex', flexDirection: 'column' }}>
+        <div className="notes-panel-fixed" style={{ position: 'fixed', top: 0, right: 0, width: 320, height: '100vh', zIndex: 5000, display: 'flex', flexDirection: 'column' }}>
           <div className="win95-window" style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column' }}>
             <div className="win95-titlebar">
               <span className="win95-titlebar-text">📝 Catatan</span>
@@ -3965,7 +3965,7 @@ function DetailDialog({ task, onClose, onEdit, onComplete, onReset, onDelete, on
 
   return (
     <div className="win95-dialog-overlay" role="presentation" onClick={onClose}>
-      <div className="win95-dialog" role="dialog" aria-modal="true" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()} style={{ maxWidth: 420 }}>
+      <div className="win95-dialog" role="dialog" aria-modal="true" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()} style={{ maxWidth: 'min(420px, 95vw)' }}>
         <div className="win95-titlebar"><span className="win95-titlebar-text">📋 {task.name}</span><button className="win95-titlebar-btn" aria-label="Tutup" onClick={onClose}>✕</button></div>
         <div className="win95-dialog-body">
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
