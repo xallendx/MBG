@@ -2729,3 +2729,53 @@ button:disabled {
   .selection-entry > span { display: none; }
   .v3-colhead { padding-top: 1px; padding-bottom: 1px; }
 }
+
+/* ── Tombol "Pilih beberapa" pindah ke bar filter ───────────────────────────
+   Sebelumnya punya baris sendiri setinggi 51px di HP, hanya untuk satu tombol.
+   Ruang itu lebih berguna untuk daftar tugas. Petunjuk "klik tugas untuk melihat
+   detail" tidak hilang — sudah ada di .v3-hint di bawah daftar. */
+.v3-select-toggle { flex: 0 0 auto; white-space: nowrap; }
+.v3-search { flex: 1 1 120px; min-width: 0; }
+
+@media (pointer: coarse) {
+  /* Jumlah tugas sudah tertulis di tiap tab filter ("Semua (11)"), jadi teks
+     "11 tugas" ini mengulang info yang sama sambil memakan satu baris. */
+  .v3-listinfo { display: none; }
+  /* Di layar sempit cukup ikon; label lengkap tetap untuk screen reader
+     lewat aria-label, dan title untuk tekan-tahan. */
+  .v3-select-toggle { min-width: var(--touch-min); padding-left: 10px; padding-right: 10px; }
+  .v3-select-toggle-text { display: none; }
+}
+
+@media (pointer: coarse) and (min-width: 560px) {
+  .v3-select-toggle-text { display: inline; }
+}
+
+/* Layar pendek: judul kolom mengulang apa yang sudah jelas dari isinya. */
+@media (pointer: coarse) and (max-height: 500px) {
+  .v3-colhead { display: none; }
+}
+
+/* Kolom cari adalah target sentuh juga. Audit sebelumnya hanya mengukur
+   <button>, sehingga tinggi 26px milik <input> ini lolos. Sekarang 44px —
+   tidak menambah tinggi baris karena tombol di sebelahnya sudah 44px. */
+@media (pointer: coarse) {
+  .v3-search { min-height: var(--touch-min); font-size: 14px; }
+}
+
+/* Layar pendek tapi lebar (HP landscape): tab filter, kolom cari, dan tombol
+   pilih muat dalam SATU baris, jadi tidak perlu dua baris setinggi 44px. */
+@media (pointer: coarse) and (max-height: 500px) and (min-width: 700px) {
+  .v3-filterbar { flex-wrap: nowrap; }
+  .v3-seg { flex: 1 1 auto; min-width: 0; }
+  .v3-search { flex: 0 1 200px; }
+}
+
+/* Baris tugas memakai flex-wrap dengan gap 8px; gap itu ikut berlaku ANTAR
+   baris yang membungkus, jadi satu tugas membayar 16px ekstra untuk jarak yang
+   tidak terlihat perlu. Di HP jarak antar baris dikecilkan — tombol tetap 48px
+   dan seluruh baris tetap bisa ditekan. */
+@media (pointer: coarse) {
+  .v3-row { row-gap: 1px; padding-top: 6px; padding-bottom: 6px; }
+  .v3-row-act { margin-top: 3px; }
+}

@@ -111,7 +111,10 @@ export default function MBGPage() {
   // Folder tree: which projects are expanded
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set())
 
-  const [viewMode, setViewMode] = useState<'tree' | 'dashboard' | 'monitor'>('dashboard')
+  // 'tree' dulu ada di union ini tapi tidak pernah di-set maupun dirender
+  // (tidak ada tombolnya, dan cabang render hanya monitor vs dashboard).
+  // Dihapus bersama renderFolder yang mati agar tidak menyesatkan.
+  const [viewMode, setViewMode] = useState<'dashboard' | 'monitor'>('dashboard')
   const [dashFilterProject, setDashFilterProject] = useState<string | null>(null)
   const [dashFilterQuery, setDashFilterQuery] = useState('')
   const [activeTab, setActiveTab] = useState<'all' | 'siap' | 'cooldown' | 'selesai'>('all')
@@ -2614,102 +2617,6 @@ export default function MBGPage() {
   }
 
   /* ===== Render: Project Folder ===== */
-  const renderFolder = (p: Project) => {
-    const isExpanded = expandedProjects.has(p.id)
-    const stats = getProjectStats(p.id)
-    const pt = tasks.filter(t => t.project?.id === p.id)
-    const activePt = getActiveTasks(pt)
-
-    /* Fix #4: pass project name for search matching */
-    const filtered = filterTasks(pt, p.name)
-    const fSiap = filtered.filter(t => t.status === 'siap')
-    const fCd = filtered.filter(t => t.status === 'cooldown')
-    const fDone = filtered.filter(t => t.status === 'selesai')
-
-    // When searching, force expand all matching folders
-    const shouldExpand = debouncedSearch.trim() ? filtered.length > 0 : isExpanded
-
-    /* Fix #4: hide folder if searching and no match */
-    if (debouncedSearch.trim() && filtered.length === 0) return null
-
-    return (
-      <div key={p.id} className="tree-folder">
-        {/* Folder Header Row */}
-        <div className="tree-folder-header" onContextMenu={e => handleProjCtx(e, p)} onTouchStart={e => handleProjTouchStart(e, p)} onTouchMove={handleTouchMove} onTouchEnd={handleTouchEnd} onTouchCancel={handleTouchEnd}>
-          <span className={`tree-toggle ${shouldExpand ? '' : 'collapsed'}`} onClick={() => toggleFolder(p.id)}>
-            {shouldExpand ? '📂' : '📁'}
-          </span>
-          <div className="tree-folder-color" style={{ background: p.color }} />
-          <span className="tree-folder-name" onClick={() => toggleFolder(p.id)} style={{ flex: 1 }}>
-            {searchQuery ? <HL text={p.name} q={searchQuery} /> : p.name}
-          </span>
-          {/* Fix #11: Total task count */}
-          <span className="tree-stat tree-task-count">{stats.total} task</span>
-          {stats.siap > 0 && <span className="tree-stat" style={{ color: 'var(--win95-siap)' }}>✅{stats.siap}</span>}
-          {stats.cd > 0 && <span className="tree-stat" style={{ color: 'var(--win95-cd)' }}>⏳{stats.cd}</span>}
-          {stats.done > 0 && <span className="tree-stat" style={{ color: '#808080' }}>✔{stats.done}</span>}
-          {stats.archived > 0 && <span className="tree-stat" style={{ color: '#b0b0b0', fontWeight: 'normal' }}>📁{stats.archived}</span>}
-          {/* Add task button */}
-          <button className="tree-add-btn" onClick={() => openAdd(p.id)} title="Tambah Task">+</button>
-        </div>
-
-        {/* Folder Content (tasks inside) */}
-        {shouldExpand && (
-          <div className="tree-folder-content">
-            {filtered.length === 0 && activePt.length === 0 ? (
-              <div className="empty-state" style={{ padding: '12px 16px 8px' }}>
-                <div style={{ fontSize: 10 }}>Belum ada task. Klik <b>+</b> untuk menambahkan.</div>
-              </div>
-            ) : filtered.length === 0 ? (
-              <div className="empty-state" style={{ padding: '12px 16px 8px' }}>
-                <div className="icon" style={{ fontSize: 16 }}>🔍</div>
-                <div style={{ fontSize: 10 }}>{emptyFilterText()}</div>
-              </div>
-            ) : activeTab === 'all' ? (
-              <>
-                {renderStatusGroup('✅ SIAP', fSiap, `siap-${p.id}`, 'var(--win95-siap)')}
-                {renderStatusGroup('⏳ COOLDOWN', fCd, `cd-${p.id}`, 'var(--win95-cd)')}
-                {renderStatusGroup('✔️ SELESAI', fDone, `done-${p.id}`, '#808080')}
-              </>
-            ) : (
-              <div className="tree-status-content">
-                {sortTasksByPriorityAndPin(filtered).map(renderRow)}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Kerjakan Working Panel */}
-        {workingTaskId && (() => {
-          const wt = tasks.find(t => t.id === workingTaskId)
-          if (!wt || wt.project?.id !== p.id) return null
-          return (
-            <div className="working-panel">
-              {workingCompleted ? (
-                <>
-                  <div className="working-done-text">✅ <b>{wt.name}</b> telah diselesaikan</div>
-                  <button className="win95-btn" onClick={e => { e.stopPropagation(); undoWorkingComplete() }} style={{ fontSize: 10, padding: '2px 10px' }}>↩️ Batalkan (Undo) — {undoCountdown}d</button>
-                </>
-              ) : (
-                <>
-                  <div className="working-header">🔨 Mengerjakan: <b>{wt.name}</b></div>
-                  {wt.link && <div className="working-link" title={wt.link}>🔗 {wt.link}</div>}
-                  <div className="working-progress">
-                    <div className="working-progress-bar">
-                      <div className="working-progress-fill" style={{ width: `${((10 - workingCountdown) / 10) * 100}%` }} />
-                    </div>
-                  </div>
-                  <div className="working-timer">⏱ Otomatis selesai dalam <b>{workingCountdown}</b> detik</div>
-                  <button className="win95-btn" onClick={e => { e.stopPropagation(); cancelWorking() }} style={{ fontSize: 10, padding: '2px 10px' }}>❌ Batalkan</button>
-                </>
-              )}
-            </div>
-          )
-        })()}
-      </div>
-    )
-  }
-
   /* ===== Render: Schedule Config (for task form and template form) ===== */
   const renderSchedCfg = (config: Record<string, unknown> = formScheduleConfig, setConfig: (k: string, v: unknown) => void = (k, v) => setFormScheduleConfig(p => ({ ...p, [k]: v })), schedType: string = formScheduleType) => {
     const uc = setConfig
@@ -2938,15 +2845,18 @@ export default function MBGPage() {
               onChange={e => { clearBulk(); setDashFilterQuery(e.target.value); setSearchQuery(e.target.value) }}
               id="search-input"
             />
+            {/* dulu tombol ini punya baris sendiri setinggi 51px di HP — ruang
+                yang lebih berguna untuk daftar tugas. Sekarang sejajar kolom cari. */}
+            {!selectMode && visibleTasks.length > 0 && (
+              <button className="v3-btn v3-select-toggle" onClick={() => { clearBulk(); setSelectMode(true) }}
+                aria-label="Pilih beberapa tugas" title="Pilih beberapa tugas">
+                ☑<span className="v3-select-toggle-text"> Pilih beberapa</span>
+              </button>
+            )}
             <span className="v3-listinfo">{visibleTasks.length} tugas</span>
           </div>}
 
-          {!selectMode && visibleTasks.length > 0 ? (
-            <div className="selection-entry">
-              <span>Klik tugas untuk melihat detail</span>
-              <button className="v3-btn" onClick={() => { clearBulk(); setSelectMode(true) }} disabled={visibleTasks.length === 0}>☑ Pilih beberapa</button>
-            </div>
-          ) : selectMode ? (
+          {selectMode ? (
             <div className="v3-bulkbar" role="region" aria-label="Tugas terpilih">
               <b>{bulkSelected.size} dipilih</b>
               <button className="v3-btn" onClick={() => setBulkSelected(new Set(visibleTasks.map(t => t.id)))} disabled={!visibleTasks.length || bulkBusy}>Pilih semua yang terlihat</button>
@@ -4411,7 +4321,7 @@ function DetailDialog({ task, onClose, onEdit, onComplete, onReset, onDelete, on
   const isFocusedRef = useRef(false)
   // Sync notes state jika task.notes berubah dari luar (misal fetchData refresh)
   // Skip sync when user is actively typing (textarea focused) to prevent overwriting
-  useEffect(() => { if (!isFocusedRef.current) setNotes(noteDraft ?? task.notes ?? '') }, [task.notes]) // eslint-disable-line react-hooks/set-state-in-effect
+  useEffect(() => { if (!isFocusedRef.current) setNotes(noteDraft ?? task.notes ?? '') }, [task.notes])
   const [saved, setSaved] = useState('')
   const blur = () => { if (notes !== (task.notes || '')) { onSaveNotes(task.id, notes); setSaved(fmtTime(new Date())) } }
 
