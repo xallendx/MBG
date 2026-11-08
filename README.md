@@ -22,7 +22,7 @@ Aplikasi pengelola tugas airdrop dengan tema **Windows 95 retro**. Dibangun meng
 - **Framework**: Next.js 16 (App Router, TypeScript)
 - **Database**: PostgreSQL (Neon) + Prisma ORM
 - **Auth**: Cookie-based + HMAC signature (bcryptjs)
-- **Styling**: Tailwind CSS 4 + Windows 95 custom theme
+- **Styling**: CSS biasa (`src/app/globals.css`) dengan tema Windows 95 — tanpa Tailwind
 - **Security**: Rate limiting, HMAC cookies, CORS headers
 
 ## Cara Install
@@ -148,7 +148,7 @@ Set `LEVEL_LOG=warn` untuk meredam log info di produksi.
 
 | File | Peran |
 |---|---|
-| `src/lib/schedule.ts` | perhitungan cooldown & jadwal (13 test) |
+| `src/lib/schedule.ts` | perhitungan cooldown & jadwal (inti suite vitest: 117 test di 9 file) |
 | `src/lib/settings.ts` | baca/tulis kolom `User.settings` dengan validasi + default |
 | `src/lib/task-view.ts` | label jadwal, prioritas, aturan warna cooldown (dipakai semua view) |
 | `src/lib/notify-sweep.ts` | satu-satunya logika pengiriman notifikasi |

@@ -48,6 +48,13 @@ jobs:
       - name: Type check
         run: npx tsc --noEmit
 
+      - name: Lint (tanpa utang baru)
+        # CI sebelumnya tidak menjalankan lint sama sekali, sehingga 30 error
+        # react-hooks yang sudah ada bisa bertambah tanpa terdeteksi. Skrip ini
+        # membandingkan dengan eslint-baseline.json: error baru menggagalkan
+        # build, perbaikan lama diminta dikunci lewat --update.
+        run: npm run lint:baseline
+
       - name: Unit test (logika jadwal)
         run: npm test
 

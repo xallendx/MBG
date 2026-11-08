@@ -1,17 +1,28 @@
 // MBG Airdrop Task Manager — Service Worker
 // Handles push notifications even when the app is closed or in background
 
-const CACHE_NAME = 'mbg-v3'
+const CACHE_NAME = 'mbg-v4'
 
 // Install — cache essential static assets only (NO API routes)
+//
+// PENTING: `cache.addAll()` bersifat atomik. Satu URL gagal (mis. aset yang
+// tidak ada) membuat seluruh install gagal, service worker dibuang, dan
+// `navigator.serviceWorker.ready` tidak pernah selesai — akibatnya Web Push
+// mati total. Karena itu tiap aset di-cache terpisah dan kegagalannya
+// ditelan: push harus tetap hidup walau satu ikon tidak tersedia.
+const PRECACHE_URLS = ['/', '/logo.svg']
+
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll([
-        '/',
-        '/favicon.ico'
-      ])
-    })
+    caches.open(CACHE_NAME).then((cache) =>
+      Promise.all(
+        PRECACHE_URLS.map((url) =>
+          cache.add(new Request(url, { cache: 'reload' })).catch(() => {
+            // Aset optional gagal diambil — jangan batalkan install.
+          })
+        )
+      )
+    )
   )
   self.skipWaiting()
 })
@@ -28,7 +39,7 @@ self.addEventListener('activate', (event) => {
 
 // Push event — show notification like Discord
 self.addEventListener('push', (event) => {
-  let data = { title: 'MBG Task Manager', body: 'Task update', icon: '/favicon.ico', tag: 'mbg-general', url: '/' }
+  let data = { title: 'MBG Task Manager', body: 'Task update', icon: '/logo.svg', tag: 'mbg-general', url: '/' }
 
   try {
     data = { ...data, ...event.data.json() }
@@ -39,8 +50,8 @@ self.addEventListener('push', (event) => {
   event.waitUntil(
     self.registration.showNotification(data.title, {
       body: data.body,
-      icon: data.icon || '/favicon.ico',
-      badge: '/favicon.ico',
+      icon: data.icon || '/logo.svg',
+      badge: '/logo.svg',
       tag: data.tag || 'mbg-general',
       data: { url: data.url || '/' },
       requireInteraction: false,

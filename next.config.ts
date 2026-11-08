@@ -1,7 +1,16 @@
 import type { NextConfig } from 'next'
 
+// 'unsafe-eval' hanya dibutuhkan mode dev (React Refresh). Produksi tidak
+// memakainya, jadi jangan dilepas ke pengguna akhir.
+const isDev = process.env.NODE_ENV !== 'production'
+
+// Vercel memakai builder Next.js-nya sendiri dan tidak membutuhkan bundel
+// standalone; memaksakannya di sana membuat output tidak seperti yang diharapkan
+// builder. Self-host tetap mendapat standalone seperti sebelumnya.
+const onVercel = process.env.VERCEL === '1'
+
 const nextConfig: NextConfig = {
-  output: 'standalone',
+  ...(onVercel ? {} : { output: 'standalone' as const }),
   reactStrictMode: true,
   poweredByHeader: false,
   async headers() {
@@ -16,7 +25,7 @@ const nextConfig: NextConfig = {
           key: 'Content-Security-Policy',
           value: [
             "default-src 'self'",
-            "script-src 'self' 'unsafe-eval' 'unsafe-inline'",
+            `script-src 'self'${isDev ? " 'unsafe-eval'" : ''} 'unsafe-inline'`,
             "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
             "font-src 'self' https://fonts.gstatic.com",
             "img-src 'self' data: blob:",
