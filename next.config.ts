@@ -1,5 +1,9 @@
 import type { NextConfig } from 'next'
 
+// 'unsafe-eval' hanya dibutuhkan mode dev (React Refresh). Produksi tidak
+// memakainya, jadi jangan dilepas ke pengguna akhir.
+const isDev = process.env.NODE_ENV !== 'production'
+
 const nextConfig: NextConfig = {
   output: 'standalone',
   reactStrictMode: true,
@@ -16,7 +20,7 @@ const nextConfig: NextConfig = {
           key: 'Content-Security-Policy',
           value: [
             "default-src 'self'",
-            "script-src 'self' 'unsafe-eval' 'unsafe-inline'",
+            `script-src 'self'${isDev ? " 'unsafe-eval'" : ''} 'unsafe-inline'`,
             "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
             "font-src 'self' https://fonts.gstatic.com",
             "img-src 'self' data: blob:",
