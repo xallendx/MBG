@@ -11,12 +11,18 @@
   --win95-title-text: #ffffff;
   --win95-highlight: #000080;
   --win95-highlight-text: #ffffff;
-  --win95-siap: #008000;
-  --win95-cd: #808000;
-  --win95-done: #808080;
+  /* Hijau status: #008000 di atas abu terang hanya 4.19:1 (gagal WCAG AA).
+     #006400 memberi ~5.9:1 sehingga "Siap sekarang" — status yang paling sering
+     dicari — tetap terbaca di layar HP dan di luar ruangan. */
+  --win95-siap: #006400;
+  --win95-cd: #6b6b00;
+  --win95-done: #5a5a5a;
   /* Teks sekunder: #808080 di atas #c0c0c0 hanya ~3.4:1 (gagal WCAG AA).
      Dipakai untuk meta text supaya tetap terbaca di layar HP / luar ruangan. */
   --win95-muted: #4a4a4a;
+  /* Ukuran minimum area sentuh. 44px mengikuti WCAG 2.5.5 / pedoman Apple-Google;
+     dipakai di layar sentuh supaya tombol tidak mudah salah tekan. */
+  --touch-min: 44px;
 }
 
 * {
@@ -2368,3 +2374,315 @@ button:disabled {
 .toolbar-more-menu button:hover, .toolbar-more-menu button:focus-visible { background:#000080; color:#fff; }
 .first-task-title { font-weight:bold; font-size:16px; color:#222; margin-bottom:14px; }
 .first-task-button { min-height:40px; font-size:13px; }
+
+/* ===== Ramah dipakai harian & pengguna baru =====
+   Tujuan: tetap bertema Win95, tapi nyaman di HP dan terbaca semua orang.
+   Aturan di sini sengaja ditaruh paling akhir agar menang atas gaya lama
+   tanpa perlu membongkar ratusan deklarasi di atas. */
+
+/* ── 1. Area sentuh ────────────────────────────────────────────────────────
+   Sebelumnya SEMUA tombol di HP di bawah 44px (ikon pojok cuma 26x24).
+   `(pointer: coarse)` menyasar perangkat sentuh, bukan sekadar layar kecil,
+   jadi desktop ber-mouse tetap rapat seperti Win95 asli. */
+@media (pointer: coarse) {
+  .win95-toolbar-btn,
+  .win95-menubar-item,
+  .v3-btn,
+  .v3-seg button,
+  .v3-side-item,
+  .v3-card,
+  .win95-btn,
+  .toolbar-more summary,
+  .toolbar-more-menu button,
+  .win95-dropdown-item,
+  .selection-entry .v3-btn {
+    min-height: var(--touch-min);
+  }
+
+  /* Tombol aksi di baris tugas: paling sering ditekan, beri ruang paling lega. */
+  .v3-row-act .v3-btn { min-height: 48px; }
+
+  /* Ikon pojok (Catatan / Profil): dulu 26x24 dan berdempetan. */
+  .win95-titlebar-btn {
+    width: var(--touch-min);
+    height: var(--touch-min);
+    font-size: 16px;
+  }
+  .win95-titlebar { height: auto; min-height: 48px; padding: 2px 4px; }
+  .win95-titlebar-text { font-size: 13px; }
+
+  /* Jarak antar tombol supaya jempol tidak menekan dua sekaligus. */
+  .v3-row-act { gap: 8px; }
+  .v3-seg { gap: 4px; flex-wrap: wrap; }
+  .win95-toolbar { gap: 6px !important; }
+  .win95-dropdown-item { padding: 10px 14px; }
+  .win95-menubar-item { padding: 10px 12px; display: flex; align-items: center; }
+
+  /* Kotak centang kecil susah kena jempol; perbesar area kliknya. */
+  .v3-check { width: 22px; height: 22px; flex: 0 0 22px; }
+
+  /* Baris tugas jadi target lebih tinggi tanpa mengubah tata letaknya.
+     Nama tugas adalah tombol pembuka detail — ia harus selebar mungkin
+     dan setinggi target sentuh lain, bukan sekadar setinggi teksnya. */
+  .v3-row { padding: 10px 8px; }
+  .v3-task-name-button {
+    min-height: var(--touch-min);
+    display: flex;
+    align-items: center;
+    /* flex + min-width:0 supaya nama panjang dipotong ellipsis, bukan
+       mendorong kolom status keluar baris. */
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  /* Status pindah ke baris sendiri di HP agar nama tugas punya ruang penuh
+     dan tidak bertabrakan dengan "Siap sekarang". */
+  .v3-row-main { flex: 1 1 100%; min-width: 0; }
+  .v3-row-when { order: 3; flex: 1 1 100%; text-align: left; }
+  /* Pita status dibuat absolut supaya tetap setinggi seluruh kartu walau
+     isinya sekarang membungkus ke beberapa baris. */
+  .v3-row { position: relative; padding-left: 14px; }
+  .v3-row-bar {
+    position: absolute; left: 4px; top: 6px; bottom: 6px;
+    width: 4px; align-self: auto;
+  }
+}
+
+/* ── 2. Teks yang tadinya terlalu kecil ────────────────────────────────────
+   15 grup teks berukuran < 12px. Yang paling mengganggu adalah hint dan
+   judul grup, karena justru itu yang menjelaskan status ke pengguna baru. */
+.v3-hint { font-size: 12px; color: #4a4a4a; }
+.v3-grouphead { font-size: 12px; }
+.v3-side-title { font-size: 11px; }
+.v3-row-when small { font-size: 11px; }
+.v3-seg .v3-count { font-size: 11px; }
+.v3-card-label { font-size: 12px; }
+.v3-projrow-meta { font-size: 11px; }
+.v3-progress-legend { font-size: 11px; }
+.v3-colhead { font-size: 11px; }
+
+@media (pointer: coarse) {
+  .v3-row-name, .v3-task-name-button { font-size: 14px; }
+  .v3-row-meta { font-size: 12px; }
+  .v3-row-when { font-size: 13px; }
+  .v3-btn { font-size: 13px; }
+  .v3-empty { font-size: 14px; }
+  .win95-dropdown-item { font-size: 13px; }
+  .win95-menubar-item { font-size: 13px; }
+}
+
+/* ── 3. Kontras judul grup ─────────────────────────────────────────────────
+   "Siap dikerjakan" (2.95:1) dan "Menunggu" (3.24:1) gagal AA di atas #c8c4bc.
+   Warna inline dari komponen ditimpa di sini supaya lolos tanpa mengubah
+   arti warnanya (hijau = siap, kuning = menunggu). */
+.v3-grouphead { color: #1f1f1f !important; }
+.v3-grouphead .v3-grouphead-label { font-weight: bold; }
+.v3-grouphead[data-status="siap"] { border-left: 4px solid var(--win95-siap); }
+.v3-grouphead[data-status="cooldown"] { border-left: 4px solid var(--win95-cd); }
+.v3-grouphead[data-status="selesai"] { border-left: 4px solid var(--win95-done); }
+
+/* ── 4. Menu aplikasi bisa dipakai keyboard ────────────────────────────────
+   Item menu dulu <div> tanpa role/tabIndex sehingga Tab tidak pernah
+   mencapainya. Sekarang berupa <button>; gaya berikut menetralkan gaya
+   bawaan browser supaya tampilannya tetap sama seperti sebelumnya. */
+.win95-menubar-item {
+  font-family: inherit;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  text-align: left;
+}
+.win95-dropdown-item {
+  font-family: inherit;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  width: 100%;
+}
+.win95-menubar-item:focus-visible,
+.win95-dropdown-item:focus-visible {
+  outline: 2px solid #000080;
+  outline-offset: -2px;
+  background: var(--win95-highlight);
+  color: var(--win95-highlight-text);
+}
+/* Item yang cuma menampilkan info (nama user, role) bukan aksi. */
+.win95-dropdown-info { cursor: default; }
+.win95-dropdown-info:hover { background: transparent; color: inherit; }
+
+/* ── 5. Fokus selalu terlihat ──────────────────────────────────────────────
+   Pengguna keyboard harus tahu sedang berada di mana. */
+.win95-btn:focus-visible,
+.win95-toolbar-btn:focus-visible,
+.win95-titlebar-btn:focus-visible,
+.v3-side-item:focus-visible,
+.v3-seg button:focus-visible,
+.v3-card:focus-visible,
+.v3-check:focus-visible,
+.toolbar-more summary:focus-visible {
+  outline: 2px solid #000080;
+  outline-offset: 2px;
+}
+
+/* ── 6. Petunjuk saat tombol simpan belum bisa ditekan ─────────────────────
+   Tombol disabled tanpa alasan membuat pengguna baru bingung harus apa. */
+.form-hint-inline {
+  font-size: 12px;
+  color: #4a4a4a;
+  margin-top: 6px;
+}
+.form-hint-inline[data-kind="warn"] { color: #8a4b00; }
+
+/* ── 7. Ajakan menyalakan pengingat setelah tugas pertama ──────────────────
+   Sebelumnya tidak ada jalan yang mengarahkan pengguna ke notifikasi. */
+.reminder-nudge {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin: 6px 4px;
+  padding: 10px 12px;
+  background: #eef2ff;
+  border: 1px solid #000080;
+  border-left: 4px solid #000080;
+  font-size: 12px;
+}
+.reminder-nudge-text { flex: 1 1 220px; line-height: 1.45; }
+.reminder-nudge-text b { display: block; margin-bottom: 2px; font-size: 13px; }
+.reminder-nudge .v3-btn { min-height: 36px; }
+@media (pointer: coarse) {
+  .reminder-nudge { font-size: 13px; }
+  .reminder-nudge .v3-btn { min-height: var(--touch-min); }
+}
+
+/* ── 8. Hormati preferensi gerak & kontras sistem ────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
+/* ===== Dialog Pengingat: satu layar, dua pilihan =====
+   Menggantikan jalan buntu "checkbox sudah tercentang tapi push belum aktif".
+   Setiap kartu punya satu aksi utama dan status yang jujur. */
+.reminder-dialog { width: min(460px, 95vw); max-width: 95vw; }
+.reminder-intro { margin: 0 0 10px; font-size: 13px; line-height: 1.5; color: #1f1f1f; }
+.reminder-option {
+  border: 2px solid; border-color: var(--win95-white) #808080 #808080 var(--win95-white);
+  background: #d9d5cd;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+.reminder-option[data-active="true"] { background: #e9f2e9; border-left: 4px solid var(--win95-siap); }
+.reminder-option-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 14px; }
+.reminder-badge {
+  font-size: 11px; font-weight: bold; color: #fff; background: var(--win95-siap);
+  padding: 2px 7px; border-radius: 2px;
+}
+.reminder-option-desc { font-size: 12px; color: #3a3a3a; margin: 4px 0 8px; line-height: 1.45; }
+.reminder-action { display: block; width: 100%; text-align: center; min-height: 44px; font-size: 13px; text-decoration: none; }
+.reminder-done { font-size: 12px; color: #145214; line-height: 1.6; }
+.reminder-warn { font-size: 12px; color: #7a3d00; line-height: 1.5; }
+.reminder-steps { font-size: 12px; line-height: 1.55; display: flex; flex-direction: column; gap: 8px; }
+.reminder-code { font-size: 12px; color: #3a3a3a; }
+.reminder-code code { background: #fff; padding: 2px 5px; border: 1px solid #9a9a9a; font-size: 12px; }
+.reminder-inline-btn { min-height: 36px; font-size: 12px; }
+.reminder-foot { font-size: 11px; color: #4a4a4a; padding-top: 2px; line-height: 1.5; }
+@media (pointer: coarse) {
+  .reminder-intro { font-size: 14px; }
+  .reminder-option-head { font-size: 15px; }
+  .reminder-option-desc, .reminder-done, .reminder-warn, .reminder-steps, .reminder-code { font-size: 13px; }
+  .reminder-action { min-height: 48px; font-size: 14px; }
+  .reminder-inline-btn { min-height: var(--touch-min); }
+  .reminder-foot { font-size: 12px; }
+}
+
+/* ===== Pemakaian sehari-hari di HP: lebih banyak tugas terlihat =====
+   Ukuran sebelumnya: dari layar 844px hanya 387px untuk daftar, dan satu baris
+   tugas 163px — jadi cuma 2 tugas terlihat lalu harus menggulir terus.
+   Yang dipangkas adalah hiasan (menubar, hint, jarak), BUKAN area sentuh:
+   semua tombol tetap >= 44px. */
+@media (pointer: coarse) {
+  /* Menubar File/Lihat/Alat jarang dipakai harian; diakses lewat toolbar.
+     Tetap ada di DOM dan tetap bisa dijangkau keyboard/screen reader. */
+  .win95-menubar { display: none; }
+
+  /* Judul jendela dipadatkan, tapi tombolnya TETAP 44px agar mudah ditekan. */
+  .win95-titlebar { min-height: 46px; padding: 1px 4px; }
+  .win95-titlebar-btn { height: 44px; width: 44px; }
+
+  /* Hint "Klik tugas untuk melihat detail" tidak berguna di layar sentuh
+     dan memakan satu baris penuh setiap kali buka aplikasi. */
+  .selection-entry > span { display: none; }
+  .selection-entry { padding: 3px 6px; }
+  .v3-hint { display: none; }
+
+  /* Tab filter jadi satu baris yang bisa digeser, bukan membungkus 2 baris. */
+  .v3-seg { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .v3-seg::-webkit-scrollbar { display: none; }
+  .v3-seg button { flex: 0 0 auto; padding: 6px 10px; }
+  .v3-filterbar { gap: 4px; padding: 4px 6px; }
+
+  /* Baris tugas: nama tidak perlu setinggi tombol karena SELURUH baris sudah
+     bisa ditekan untuk membuka detail. Tombol aksi tetap 48px. */
+  .v3-task-name-button { min-height: 28px; }
+  .v3-row { padding: 7px 8px 8px 14px; margin-bottom: 3px; }
+  .v3-row-meta { margin-top: 0; }
+  .v3-row-act { margin-top: 5px; }
+  /* Status dan meta bersebelahan supaya tidak makan satu baris tersendiri. */
+  .v3-row-when { flex: 0 0 auto; order: 3; font-size: 12px; }
+  .v3-row-main { flex: 1 1 auto; }
+
+  .win95-statusbar { font-size: 11px; }
+  .v3-grouphead { margin: 2px 0; padding: 3px 6px; }
+}
+
+/* ===== Konfirmasi sepulang mengerjakan tugas =====
+   Loop harian: buka link -> kerjakan di tab lain -> kembali. Sebelumnya harus
+   mencari barisnya lagi untuk menekan Selesai. Bar ini muncul tepat di atas
+   daftar sehingga cukup satu ketukan. */
+.return-bar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 10px;
+  background: #fff8e1;
+  border-bottom: 1px solid #8a6d00;
+  border-left: 4px solid #8a6d00;
+  font-size: 12px;
+}
+.return-bar-text { flex: 1 1 200px; line-height: 1.45; }
+.return-bar-text b { display: inline; }
+.return-bar-text span { display: block; color: #4a4a4a; }
+.return-bar .v3-btn { min-height: 40px; }
+@media (pointer: coarse) {
+  .return-bar { font-size: 13px; }
+  .return-bar .v3-btn { min-height: var(--touch-min); flex: 1 1 auto; }
+}
+
+/* ── Undo di HP: pengaman salah tekan tidak boleh susah ditekan ──────────────
+   Selesai sekali ketuk itu cepat, tapi kalau salah tekan yang menyelamatkan
+   adalah Undo. Ukuran aslinya 63x19px (dan tombol tutup 14x14) — terlalu kecil
+   untuk jari. Di perangkat sentuh keduanya jadi 44px; desktop tetap rapat. */
+@media (pointer: coarse) {
+  .toast-container {
+    bottom: 12px;
+    left: 8px;
+    right: 8px;
+    transform: none;
+    align-items: stretch;
+  }
+  .win95-toast {
+    max-width: none;
+    min-width: 0;
+    font-size: 13px;
+    padding: 8px 8px 8px 12px;
+    gap: 6px;
+  }
+  .win95-toast-action {
+    min-height: var(--touch-min);
+    padding: 6px 14px;
+    font-size: 13px;
+    border-width: 2px;
+  }
+  .win95-toast-close {
+    min-width: var(--touch-min);
+    min-height: var(--touch-min);
+    font-size: 16px;
+    padding: 0;
+    display: grid;
+    place-items: center;
+  }
+}

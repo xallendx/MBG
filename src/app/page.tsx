@@ -116,7 +116,7 @@ export default function MBGPage() {
   const [dashFilterQuery, setDashFilterQuery] = useState('')
   const [activeTab, setActiveTab] = useState<'all' | 'siap' | 'cooldown' | 'selesai'>('all')
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
-  const [dialogType, setDialogType] = useState<'add' | 'edit' | 'detail' | 'settings' | 'telegram' | 'edit-project' | 'add-project' | 'help' | 'share' | 'import-share' | 'notes' | 'admin' | 'templates' | null>(null)
+  const [dialogType, setDialogType] = useState<'add' | 'edit' | 'detail' | 'settings' | 'telegram' | 'edit-project' | 'add-project' | 'help' | 'share' | 'import-share' | 'notes' | 'admin' | 'templates' | 'reminders' | null>(null)
   const [confirmData, setConfirmData] = useState<{ title: string; message: string; onConfirm: () => void } | null>(null)
   const [confirmLoading, setConfirmLoading] = useState(false)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; task: Task } | null>(null)
@@ -143,6 +143,18 @@ export default function MBGPage() {
   // Telegram
   const [telegramCode, setTelegramCode] = useState('')
   const [telegramLinked, setTelegramLinked] = useState(false)
+  // Ajakan menyalakan pengingat. Dulu tidak ada jalan dari layar utama ke
+  // notifikasi, padahal itu alasan utama orang memakai aplikasi ini.
+  // Dibaca sekali dari localStorage (pola yang sama dengan authUser di atas)
+  // supaya tidak menambah effect yang memanggil setState saat render.
+  const [reminderNudgeHidden, setReminderNudgeHidden] = useState(() => {
+    if (typeof window === 'undefined') return true
+    try {
+      const raw = localStorage.getItem('mbg_auth')
+      const uid = raw ? JSON.parse(raw)?.id : null
+      return uid ? localStorage.getItem(`mbg_reminder_nudge_${uid}`) === 'dismissed' : true
+    } catch { return true }
+  })
   const [telegramName, setTelegramName] = useState('')
   const [codeGenerating, setCodeGenerating] = useState(false)
   const [telegramTesting, setTelegramTesting] = useState(false)
@@ -170,6 +182,15 @@ export default function MBGPage() {
 
   // Kerjakan (Work on Task)
   const [workingTaskId, setWorkingTaskId] = useState<string | null>(null)
+  /* Pemakaian harian: setelah membuka link tugas, pengguna kembali ke app dan
+     harus mencari tugas itu lagi untuk menandainya selesai. Id ini dipakai untuk
+     menawarkan konfirmasi tepat di tempat, tanpa mencari. */
+  const [returnTaskId, setReturnTaskId] = useState<string | null>(null)
+  const [returnPromptOpen, setReturnPromptOpen] = useState(false)
+  // Diisi oleh openTaskLink saat pengguna menekan "Buka link"; dibaca handler
+  // visibilitychange. Sengaja tidak disinkronkan saat render agar tidak
+  // menulis ref di badan render.
+  const returnTaskRef = useRef<string | null>(null)
   const [workingCountdown, setWorkingCountdown] = useState(10)
   const [workingCompleted, setWorkingCompleted] = useState(false)
   const [undoCountdown, setUndoCountdown] = useState(0) // countdown untuk tombol undo (detik tersisa)
@@ -266,6 +287,11 @@ export default function MBGPage() {
     } else {
       localStorage.removeItem('mbg_auth')
     }
+    // Ajakan pengingat disimpan per akun: perangkat bersama tidak saling
+    // menimpa pilihan "nanti saja".
+    try {
+      setReminderNudgeHidden(user ? localStorage.getItem(`mbg_reminder_nudge_${user.id}`) === 'dismissed' : true)
+    } catch { setReminderNudgeHidden(true) }
   }
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login')
   const [loginUsername, setLoginUsername] = useState('')
@@ -306,7 +332,18 @@ export default function MBGPage() {
 
       // Register SW
       const registration = await navigator.serviceWorker.register('/sw.js')
-      await navigator.serviceWorker.ready
+      // `serviceWorker.ready` menunggu worker aktif. Kalau install gagal,
+      // promise ini tidak pernah selesai dan seluruh alur push menggantung
+      // tanpa pesan. Beri batas waktu supaya kegagalannya terlihat.
+      const active = await Promise.race([
+        navigator.serviceWorker.ready,
+        new Promise<null>(resolve => setTimeout(() => resolve(null), 10000)),
+      ])
+      if (!active) {
+        console.warn('Push: service worker belum aktif setelah 10 detik; notifikasi web dilewati.')
+        setPushSupported(false)
+        return
+      }
 
       // Check existing subscription
       const existingSub = await registration.pushManager.getSubscription()
@@ -407,7 +444,7 @@ export default function MBGPage() {
   const sendBrowserNotif = useCallback((title: string, body: string) => {
     if (typeof Notification === 'undefined' || notifPermission !== 'granted') return
     try {
-      new Notification(title, { body, icon: '/favicon.ico', badge: '/favicon.ico' })
+      new Notification(title, { body, icon: '/logo.svg', badge: '/logo.svg' })
     } catch { /* fallback: do nothing */ }
   }, [notifPermission])
 
@@ -770,7 +807,12 @@ export default function MBGPage() {
       fetchDataRef.current(false, true)
     }
     const i = setInterval(tick, 60000)
-    const onVisible = () => { if (!document.hidden) fetchDataRef.current(false, true) }
+    const onVisible = () => {
+      if (document.hidden) return
+      fetchDataRef.current(false, true)
+      // Baru kembali dari mengerjakan tugas di tab/aplikasi lain.
+      if (returnTaskRef.current) setReturnPromptOpen(true)
+    }
     document.addEventListener('visibilitychange', onVisible)
     return () => {
       clearInterval(i)
@@ -1697,6 +1739,29 @@ export default function MBGPage() {
   }
 
   /* ===== Telegram ===== */
+  /* ===== Pengingat: satu layar, satu tujuan =====
+     Sebelumnya "Nyalakan pengingat" membuka Pengaturan umum yang checkbox
+     push-nya SUDAH tercentang walau push belum aktif. Menekan OK tidak meminta
+     izin apa pun, jadi pengguna harus tahu sendiri untuk menghapus lalu
+     mencentang ulang. Di sini status ditampilkan apa adanya dan tiap jalur
+     punya satu tombol yang benar-benar melakukan aksinya. */
+  const pushStatus: 'active' | 'need-permission' | 'blocked' | 'unsupported' | 'no-key' =
+    !pushSupported ? 'unsupported'
+      : notifPermission === 'denied' ? 'blocked'
+        : pushEnabled ? 'active'
+          : notifPermission === 'granted' ? 'no-key'
+            : 'need-permission'
+
+  const enablePushReminder = async () => {
+    if (!authUser?.id) return
+    // Simpan preferensi dulu supaya server ikut mencatat pilihan pengguna.
+    try { await api('/api/settings', jsonOpts('PUT', { browserNotifEnabled: true })) } catch { /* lanjut: izin tetap diminta */ }
+    setFormBrowserNotif(true)
+    await requestNotifPermission()
+    await registerPushSubscription(authUser.id)
+    delayedFetch()
+  }
+
   const genCode = async () => {
     if (codeGenerating) return; setCodeGenerating(true)
     try { const r = await api('/api/generate-code', { method: 'POST' }); if (!r.ok) { toast('Gagal generate kode', 'error'); return }; const d = await r.json(); if (d.code) setTelegramCode(d.code) }
@@ -1727,6 +1792,14 @@ export default function MBGPage() {
   }
 
   /* ===== Fix B4: Open link FIRST (avoid popup blocker), then complete ===== */
+  /* Buka link tugas lalu ingat tugasnya. Ketika pengguna kembali, app menawarkan
+     "Sudah selesai?" supaya tidak perlu mencari barisnya lagi. */
+  const openTaskLink = (t: Task) => {
+    if (!isSafeHttpUrl(t.link)) { toast('Link tidak valid; edit tugas untuk memperbaikinya', 'error'); return }
+    window.open(t.link, '_blank', 'noopener,noreferrer')
+    if (t.status === 'siap') { setReturnTaskId(t.id); returnTaskRef.current = t.id }
+  }
+
   const completeAndOpenLink = async (t: Task) => {
     // Open link FIRST while still in user click context (avoids popup blocker)
     if (!isSafeHttpUrl(t.link)) { toast('Link tidak valid; edit tugas untuk memperbaikinya', 'error'); return }
@@ -2123,6 +2196,13 @@ export default function MBGPage() {
   const openDetail = (t: Task) => { if (Date.now() - ctxOpenTimeRef.current < 300) return; detailRef.current = t; setSelectedTaskId(t.id); setDialogType('detail') }
   const openEditProject = (p: Project) => { setFormProjectName(p.name); setFormProjectColor(p.color); setSelectedTaskId(p.id); setDialogType('edit-project') }
   const openAddProject = () => { setFormProjectName(''); setFormProjectColor('#000080'); setDialogType('add-project') }
+  // Kunci per akun supaya perangkat bersama tidak saling menimpa pilihan.
+  const reminderNudgeKey = authUser?.id ? `mbg_reminder_nudge_${authUser.id}` : null
+  const dismissReminderNudge = () => {
+    setReminderNudgeHidden(true)
+    if (reminderNudgeKey) { try { localStorage.setItem(reminderNudgeKey, 'dismissed') } catch { /* penyimpanan penuh — abaikan */ } }
+  }
+
   const openSettings = () => { const s = settings as Record<string, unknown>; setFormTimezone(['WIB', 'WITA', 'WIT'].includes(s.timezone as string) ? (s.timezone as string) : 'WIB'); setFormTimeFormat(s.timeFormat === '12' ? '12' : '24'); setFormAutoExpandSiap(s.autoExpandSiap !== false); setFormAutoCompleteLink(s.autoCompleteLink === true); setFormTelegramNotif(s.telegramNotifEnabled !== false); setFormBrowserNotif(s.browserNotifEnabled !== false); setFormNotifyBeforeMin((s.notifyBeforeCooldownMin as number) || 5); setFormAudioAlertEnabled(s.audioAlertEnabled !== false); setDialogType('settings') }
 
   /* ===== Folder toggle ===== */
@@ -2702,7 +2782,7 @@ export default function MBGPage() {
         <div className="v3-row-act" onClick={e => e.stopPropagation()}>
           {t.status === 'siap' && (
             <>
-              {isSafeHttpUrl(t.link) && <button className="v3-btn" onClick={e => { e.stopPropagation(); if (settings.autoCompleteLink) completeAndOpenLink(t); else window.open(t.link!, '_blank', 'noopener,noreferrer') }} title={settings.autoCompleteLink ? 'Buka link dan tandai selesai sesuai pengaturan' : 'Buka link tanpa menyelesaikan tugas'}>
+              {isSafeHttpUrl(t.link) && <button className="v3-btn" onClick={e => { e.stopPropagation(); if (settings.autoCompleteLink) completeAndOpenLink(t); else openTaskLink(t) }} title={settings.autoCompleteLink ? 'Buka link dan tandai selesai sesuai pengaturan' : 'Buka link tanpa menyelesaikan tugas'}>
                 {settings.autoCompleteLink ? 'Buka + selesai' : 'Buka link ↗'}
               </button>}
               <button
@@ -2831,6 +2911,29 @@ export default function MBGPage() {
             </div>
           ) : null}
 
+          {/* Konfirmasi sepulang mengerjakan: satu ketukan, tanpa mencari barisnya.
+              Hanya muncul kalau tugasnya masih berstatus siap. */}
+          {returnPromptOpen && (() => {
+            const rt = tasks.find(t => t.id === returnTaskId)
+            if (!rt || rt.status !== 'siap') return null
+            return (
+              <div className="return-bar" role="region" aria-label="Konfirmasi tugas selesai">
+                <div className="return-bar-text">
+                  Habis dibuka: <b>{rt.name}</b>
+                  <span>Sudah selesai dikerjakan?</span>
+                </div>
+                <button type="button" className="v3-btn v3-btn-primary"
+                  onClick={() => { setReturnPromptOpen(false); setReturnTaskId(null); returnTaskRef.current = null; complete(rt.id) }}>
+                  ✓ Sudah selesai
+                </button>
+                <button type="button" className="v3-btn"
+                  onClick={() => { setReturnPromptOpen(false); setReturnTaskId(null); returnTaskRef.current = null }}>
+                  Belum
+                </button>
+              </div>
+            )
+          })()}
+
           {visibleTasks.length > 0 && <div className="v3-colhead">
             {selectMode && <input
               type="checkbox"
@@ -2876,7 +2979,7 @@ export default function MBGPage() {
                   return (
                     <div key={sec.status}>
                       {activeTab === 'all' && (
-                        <div className="v3-grouphead" style={{ color: sec.color }}>
+                        <div className="v3-grouphead" data-status={sec.status}>
                           {sec.icon} {sec.label} ({items.length})
                         </div>
                       )}
@@ -2885,6 +2988,22 @@ export default function MBGPage() {
                   )
                 })}
               </>
+            )}
+            {/* Muncul hanya setelah pengguna punya tugas, dan hanya kalau belum
+                ada pengingat yang aktif. Tidak muncul lagi setelah ditutup. */}
+            {tasks.length > 0 && !reminderNudgeHidden && !telegramLinked && !pushEnabled && (
+              <div className="reminder-nudge" role="region" aria-label="Ajakan menyalakan pengingat">
+                <div className="reminder-nudge-text">
+                  <b>Biar tidak lupa mengerjakan</b>
+                  Nyalakan pengingat supaya kamu dikabari saat tugas siap lagi — termasuk ketika aplikasi ditutup.
+                </div>
+                <button type="button" className="v3-btn v3-btn-primary" onClick={() => setDialogType('reminders')}>
+                  Nyalakan pengingat
+                </button>
+                <button type="button" className="v3-btn" onClick={dismissReminderNudge} aria-label="Tutup ajakan pengingat">
+                  Nanti saja
+                </button>
+              </div>
             )}
             {tasks.length > 0 && <div className="v3-hint">Klik tugas untuk melihat detail</div>}
           </div>
@@ -3122,29 +3241,29 @@ export default function MBGPage() {
         <div className="win95-titlebar">
           <span className="win95-titlebar-text">MBG - Airdrop Task Manager</span>
           <div style={{ display: 'flex', gap: 0, alignItems: 'center' }}>
-            <button className="win95-titlebar-btn" onClick={() => { setNotesPanelOpen(!notesPanelOpen); if (!notesPanelOpen) fetchNotes() }} title="Catatan (Notepad)" style={{ marginRight: 0 }}>📝</button>
+            <button className="win95-titlebar-btn" onClick={() => { setNotesPanelOpen(!notesPanelOpen); if (!notesPanelOpen) fetchNotes() }} title="Catatan (Notepad)" aria-label="Catatan" style={{ marginRight: 0 }}>📝</button>
             <div style={{ position: 'relative', marginLeft: 4 }}>
-              <button className="win95-titlebar-btn" onClick={e => { e.stopPropagation(); setProfileMenuOpen(!profileMenuOpen) }} title="Profil Akun">👤</button>
+              <button className="win95-titlebar-btn" onClick={e => { e.stopPropagation(); setProfileMenuOpen(!profileMenuOpen) }} title="Profil Akun" aria-label="Profil dan pengaturan akun" aria-haspopup="menu" aria-expanded={profileMenuOpen}>👤</button>
               {profileMenuOpen && (
                 <>
                   {/* Invisible overlay: clicks here close the profile menu */}
                   <div style={{ position: 'fixed', inset: 0, zIndex: 9998 }} onClick={() => setProfileMenuOpen(false)} onPointerDown={e => e.stopPropagation()} />
-                  <div ref={profileDropRef} className="win95-dropdown" style={{ position: 'absolute', right: 0, top: '100%', zIndex: 9999, minWidth: 'min(180px, 70vw)' }} onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
-                    <div className="win95-dropdown-item" style={{ cursor: 'default', opacity: 0.9, fontSize: 11, fontWeight: 'bold' }}>{authUser?.displayName || authUser?.username || 'User'}</div>
-                    <div className="win95-dropdown-item" style={{ cursor: 'default', opacity: 0.5, fontSize: 10 }}>@{authUser?.username} | {projects.length} project, {activeTasks.length} aktif{totalArchived > 0 ? ` (+${totalArchived} arsip)` : ''}</div>
-                    {isAdmin && <div className="win95-dropdown-item" style={{ cursor: 'default', opacity: 0.7, fontSize: 10 }}>👑 ADMIN</div>}
+                  <div ref={profileDropRef} role="menu" className="win95-dropdown" style={{ position: 'absolute', right: 0, top: '100%', zIndex: 9999, minWidth: 'min(180px, 70vw)' }} onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
+                    <div className="win95-dropdown-item win95-dropdown-info" style={{ cursor: 'default', opacity: 0.9, fontSize: 11, fontWeight: 'bold' }}>{authUser?.displayName || authUser?.username || 'User'}</div>
+                    <div className="win95-dropdown-item win95-dropdown-info" style={{ cursor: 'default', opacity: 0.5, fontSize: 10 }}>@{authUser?.username} | {projects.length} project, {activeTasks.length} aktif{totalArchived > 0 ? ` (+${totalArchived} arsip)` : ''}</div>
+                    {isAdmin && <div className="win95-dropdown-item win95-dropdown-info" style={{ cursor: 'default', opacity: 0.7, fontSize: 10 }}>👑 ADMIN</div>}
                     <div className="win95-dropdown-sep" />
-                    <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); setProfileMenuOpen(false); openSettings() }}>⚙️ Pengaturan</div>
-                    <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); setProfileMenuOpen(false); setDialogType('templates'); fetchTemplates() }}>📋 Template Task</div>
-                    <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); setProfileMenuOpen(false); setDialogType('help') }}>❓ Bantuan</div>
+                    <button type="button" role="menuitem" className="win95-dropdown-item" onClick={e => { e.stopPropagation(); setProfileMenuOpen(false); openSettings() }}>⚙️ Pengaturan</button>
+                    <button type="button" role="menuitem" className="win95-dropdown-item" onClick={e => { e.stopPropagation(); setProfileMenuOpen(false); setDialogType('templates'); fetchTemplates() }}>📋 Template Task</button>
+                    <button type="button" role="menuitem" className="win95-dropdown-item" onClick={e => { e.stopPropagation(); setProfileMenuOpen(false); setDialogType('help') }}>❓ Bantuan</button>
                     {isAdmin && (
                       <>
                         <div className="win95-dropdown-sep" />
-                        <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); setProfileMenuOpen(false); openAdminPanel() }} style={{ color: '#006600', fontWeight: 'bold' }}>👑 Panel Admin</div>
+                        <button type="button" role="menuitem" className="win95-dropdown-item" onClick={e => { e.stopPropagation(); setProfileMenuOpen(false); openAdminPanel() }} style={{ color: '#006600', fontWeight: 'bold' }}>👑 Panel Admin</button>
                       </>
                     )}
                     <div className="win95-dropdown-sep" />
-                    <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); handleLogout() }} style={{ color: '#cc0000' }}>🚪 Logout</div>
+                    <button type="button" role="menuitem" className="win95-dropdown-item" onClick={e => { e.stopPropagation(); handleLogout() }} style={{ color: '#cc0000' }}>🚪 Logout</button>
                   </div>
                 </>
               )}
@@ -3154,43 +3273,44 @@ export default function MBGPage() {
 
         {/* Menu Bar */}
         <div className="win95-menubar">
-          <div className="win95-menubar-item" onClick={e => { e.stopPropagation(); setOpenMenu(openMenu === 'file' ? null : 'file') }}>
+          <button type="button" className="win95-menubar-item" aria-haspopup="menu" aria-expanded={openMenu === 'file'} onClick={e => { e.stopPropagation(); setOpenMenu(openMenu === 'file' ? null : 'file') }}>
             File
             {openMenu === 'file' && (
-              <div className="win95-dropdown" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
-                <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); openAddProject(); setOpenMenu(null) }}>📁 Buat Project Baru</div>
-                <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); openAddStandalone(); setOpenMenu(null) }}>📌 Buat Task Baru</div>
+              <div className="win95-dropdown" role="menu" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
+                <button type="button" role="menuitem" className="win95-dropdown-item" onClick={e => { e.stopPropagation(); openAddProject(); setOpenMenu(null) }}>📁 Buat Project Baru</button>
+                <button type="button" role="menuitem" className="win95-dropdown-item" onClick={e => { e.stopPropagation(); openAddStandalone(); setOpenMenu(null) }}>📌 Buat Task Baru</button>
                 <div className="win95-dropdown-sep" />
-                <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); doExport(); setOpenMenu(null) }}>Export Backup</div>
-                <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); fileInputRef.current?.click(); setOpenMenu(null) }}>Import Data</div>
+                <button type="button" role="menuitem" className="win95-dropdown-item" onClick={e => { e.stopPropagation(); doExport(); setOpenMenu(null) }}>Export Backup</button>
+                <button type="button" role="menuitem" className="win95-dropdown-item" onClick={e => { e.stopPropagation(); fileInputRef.current?.click(); setOpenMenu(null) }}>Import Data</button>
                 <div className="win95-dropdown-sep" />
-                <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); openImportShare(); setOpenMenu(null) }}>🔗 Import Share Code</div>
+                <button type="button" role="menuitem" className="win95-dropdown-item" onClick={e => { e.stopPropagation(); openImportShare(); setOpenMenu(null) }}>🔗 Import Share Code</button>
               </div>
             )}
-          </div>
-          <div className="win95-menubar-item" onClick={e => { e.stopPropagation(); setOpenMenu(openMenu === 'view' ? null : 'view') }}>
+          </button>
+          <button type="button" className="win95-menubar-item" aria-haspopup="menu" aria-expanded={openMenu === 'view'} onClick={e => { e.stopPropagation(); setOpenMenu(openMenu === 'view' ? null : 'view') }}>
             Lihat
             {openMenu === 'view' && (
-              <div className="win95-dropdown" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
-                <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); exitSelectMode(); setViewMode('dashboard'); setActiveTab('all'); setDashFilterQuery(''); setDashFilterProject(null); setOpenMenu(null) }}>📋 Daftar tugas</div>
-                <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); exitSelectMode(); setViewMode('monitor'); setOpenMenu(null) }}>📊 Monitor</div>
+              <div className="win95-dropdown" role="menu" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
+                <button type="button" role="menuitem" className="win95-dropdown-item" onClick={e => { e.stopPropagation(); exitSelectMode(); setViewMode('dashboard'); setActiveTab('all'); setDashFilterQuery(''); setDashFilterProject(null); setOpenMenu(null) }}>📋 Daftar tugas</button>
+                <button type="button" role="menuitem" className="win95-dropdown-item" onClick={e => { e.stopPropagation(); exitSelectMode(); setViewMode('monitor'); setOpenMenu(null) }}>📊 Monitor</button>
                 <div className="win95-dropdown-sep" />
-                <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); exitSelectMode(); setViewMode('dashboard'); setActiveTab('siap'); setOpenMenu(null) }}>✅ Siap sekarang</div>
-                <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); exitSelectMode(); setViewMode('dashboard'); setActiveTab('cooldown'); setOpenMenu(null) }}>⏳ Menunggu</div>
-                <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); exitSelectMode(); setViewMode('dashboard'); setActiveTab('selesai'); setOpenMenu(null) }}>✔️ Selesai</div>
+                <button type="button" role="menuitem" className="win95-dropdown-item" onClick={e => { e.stopPropagation(); exitSelectMode(); setViewMode('dashboard'); setActiveTab('siap'); setOpenMenu(null) }}>✅ Siap sekarang</button>
+                <button type="button" role="menuitem" className="win95-dropdown-item" onClick={e => { e.stopPropagation(); exitSelectMode(); setViewMode('dashboard'); setActiveTab('cooldown'); setOpenMenu(null) }}>⏳ Menunggu</button>
+                <button type="button" role="menuitem" className="win95-dropdown-item" onClick={e => { e.stopPropagation(); exitSelectMode(); setViewMode('dashboard'); setActiveTab('selesai'); setOpenMenu(null) }}>✔️ Selesai</button>
               </div>
             )}
-          </div>
-          <div className="win95-menubar-item" onClick={e => { e.stopPropagation(); setOpenMenu(openMenu === 'tools' ? null : 'tools') }}>
+          </button>
+          <button type="button" className="win95-menubar-item" aria-haspopup="menu" aria-expanded={openMenu === 'tools'} onClick={e => { e.stopPropagation(); setOpenMenu(openMenu === 'tools' ? null : 'tools') }}>
             Alat
             {openMenu === 'tools' && (
-              <div className="win95-dropdown" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
-                <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); setDialogType('telegram'); setOpenMenu(null) }}>Telegram</div>
-                <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); openSettings(); setOpenMenu(null) }}>Pengaturan</div>
-                <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); setDialogType('templates'); fetchTemplates(); setOpenMenu(null) }}>📋 Template Task</div>
+              <div className="win95-dropdown" role="menu" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
+                <button type="button" role="menuitem" className="win95-dropdown-item" onClick={e => { e.stopPropagation(); setDialogType('reminders'); setOpenMenu(null) }}>🔔 Pengingat</button>
+                <button type="button" role="menuitem" className="win95-dropdown-item" onClick={e => { e.stopPropagation(); setDialogType('telegram'); setOpenMenu(null) }}>Telegram</button>
+                <button type="button" role="menuitem" className="win95-dropdown-item" onClick={e => { e.stopPropagation(); openSettings(); setOpenMenu(null) }}>Pengaturan</button>
+                <button type="button" role="menuitem" className="win95-dropdown-item" onClick={e => { e.stopPropagation(); setDialogType('templates'); fetchTemplates(); setOpenMenu(null) }}>📋 Template Task</button>
               </div>
             )}
-          </div>
+          </button>
           <button type="button" className="win95-menubar-item menubar-help-button" onClick={e => { e.stopPropagation(); setDialogType('help'); setOpenMenu(null) }}>
             Bantuan
           </button>
@@ -3230,6 +3350,7 @@ export default function MBGPage() {
               <button onClick={e => { e.currentTarget.closest('details')!.open = false; openAddProject() }}>📁 Buat proyek</button>
               <button onClick={e => { e.currentTarget.closest('details')!.open = false; fetchData(true) }}>🔄 Muat ulang</button>
               <button onClick={e => { e.currentTarget.closest('details')!.open = false; setDialogType('templates'); fetchTemplates() }}>📋 Template</button>
+              <button onClick={e => { e.currentTarget.closest('details')!.open = false; setDialogType('reminders') }}>🔔 Pengingat</button>
               <button onClick={e => { e.currentTarget.closest('details')!.open = false; setDialogType('telegram') }}>📱 Telegram</button>
             </div>
           </details>
@@ -3356,8 +3477,18 @@ export default function MBGPage() {
 
             </div>
             {taskFormError && <div className="task-form-error" role="alert">⚠ {taskFormError}</div>}
+            {/* Tombol simpan mati saat nama kosong. Tanpa keterangan, pengguna baru
+                tidak tahu apa yang kurang — jadi alasannya ditulis tepat di atas tombol. */}
+            {!formName.trim() && !taskFormError && (
+              <div className="form-hint-inline" data-kind="warn" id="task-name-hint" style={{ padding: '0 12px' }}>
+                Isi dulu nama tugas di atas untuk melanjutkan.
+              </div>
+            )}
             <div className="win95-dialog-footer">
-              <button className="win95-btn primary" disabled={!formName.trim() || savingTask} onClick={() => saveTask()} style={savingTask ? { opacity: 0.6, cursor: 'wait' } : {}}>{savingTask ? '⏳ Menyimpan...' : dialogType === 'add' ? 'Tambah tugas' : 'Simpan perubahan'}</button>
+              <button className="win95-btn primary" disabled={!formName.trim() || savingTask} onClick={() => saveTask()}
+                aria-describedby={!formName.trim() ? 'task-name-hint' : undefined}
+                title={!formName.trim() ? 'Isi nama tugas dulu' : undefined}
+                style={savingTask ? { opacity: 0.6, cursor: 'wait' } : {}}>{savingTask ? '⏳ Menyimpan...' : dialogType === 'add' ? 'Tambah tugas' : 'Simpan perubahan'}</button>
               <button className="win95-btn" onClick={() => setDialogType(null)}>Batal</button>
               <div className="desktop-only-hint" style={{ flex: 1, fontSize: 9, color: '#808080', textAlign: 'right' }}>Ctrl+Enter untuk simpan</div>
             </div>
@@ -3407,7 +3538,13 @@ export default function MBGPage() {
                   </label>
                   <div style={{ fontSize: 10, color: '#808080', marginLeft: 20 }}>Notif muncul di pojok kanan bawah walau app sedang dibuka app lain</div>
                   {notifPermission !== 'granted' && formBrowserNotif && (
-                    <div style={{ fontSize: 10, color: '#cc0000', marginLeft: 20, marginTop: 2 }}>Izin browser dibutuhkan. Klik checkbox untuk mengizinkan.</div>
+                    <div style={{ fontSize: 11, color: '#7a3d00', marginLeft: 20, marginTop: 4, lineHeight: 1.5 }}>
+                      Centang di atas baru menyimpan pilihan — push belum aktif.
+                      <button type="button" className="win95-btn" style={{ display: 'block', marginTop: 6, minHeight: 36 }}
+                        onClick={() => setDialogType('reminders')}>
+                        Aktifkan sekarang
+                      </button>
+                    </div>
                   )}
                   {notifPermission === 'granted' && (
                     <div style={{ fontSize: 10, color: '#008000', marginLeft: 20, marginTop: 2 }}>
@@ -3476,6 +3613,104 @@ export default function MBGPage() {
       )}
 
       {/* ===== TELEGRAM DIALOG ===== */}
+      {/* ===== PENGINGAT: satu layar, dua pilihan jelas =====
+          Bukan daftar checkbox di tengah Pengaturan. Setiap kartu menjelaskan
+          apa yang didapat dan punya satu tombol aksi. */}
+      {dialogType === 'reminders' && (
+        <div className="win95-dialog-overlay" role="presentation" onClick={() => setDialogType(null)}>
+          <div className="win95-dialog reminder-dialog" role="dialog" aria-modal="true" aria-labelledby="reminder-title" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
+            <div className="win95-titlebar">
+              <span className="win95-titlebar-text" id="reminder-title">Pengingat</span>
+              <button className="win95-titlebar-btn" aria-label="Tutup" onClick={() => setDialogType(null)}>✕</button>
+            </div>
+            <div className="win95-dialog-body">
+              <p className="reminder-intro">
+                Pilih cara kamu ingin dikabari saat tugas siap dikerjakan. Cukup salah satu.
+              </p>
+
+              {/* --- Jalur 1: notifikasi perangkat --- */}
+              <div className="reminder-option" data-active={pushStatus === 'active'}>
+                <div className="reminder-option-head">
+                  <b>Notifikasi di perangkat ini</b>
+                  {pushStatus === 'active' && <span className="reminder-badge">Aktif</span>}
+                </div>
+                <div className="reminder-option-desc">
+                  Muncul di HP atau komputer ini, termasuk saat aplikasi ditutup.
+                </div>
+                {pushStatus === 'active' ? (
+                  <div className="reminder-done">✅ Sudah aktif. Kamu akan dikabari otomatis.</div>
+                ) : pushStatus === 'blocked' ? (
+                  <div className="reminder-warn">
+                    Izin notifikasi sedang diblokir browser. Buka ikon gembok di samping alamat situs,
+                    ubah Notifikasi menjadi <b>Izinkan</b>, lalu muat ulang halaman ini.
+                  </div>
+                ) : pushStatus === 'unsupported' ? (
+                  <div className="reminder-warn">Browser ini belum mendukung. Coba Chrome atau Edge, atau pakai Telegram di bawah.</div>
+                ) : pushStatus === 'no-key' ? (
+                  <div className="reminder-warn">
+                    Izin sudah diberikan, tapi server belum dikonfigurasi untuk push.
+                    Gunakan Telegram di bawah untuk sekarang.
+                  </div>
+                ) : (
+                  <button type="button" className="win95-btn primary reminder-action" onClick={enablePushReminder}>
+                    Izinkan notifikasi
+                  </button>
+                )}
+              </div>
+
+              {/* --- Jalur 2: Telegram --- */}
+              <div className="reminder-option" data-active={telegramLinked}>
+                <div className="reminder-option-head">
+                  <b>Lewat Telegram</b>
+                  {telegramLinked && <span className="reminder-badge">Aktif</span>}
+                </div>
+                <div className="reminder-option-desc">
+                  Dikirim ke chat Telegram kamu. Tetap masuk walau ganti perangkat.
+                </div>
+                {telegramLinked ? (
+                  <div className="reminder-done">
+                    ✅ Terhubung{telegramName ? ` ke ${telegramName}` : ''}.{' '}
+                    <button type="button" className="win95-btn reminder-inline-btn" onClick={testTelegram} disabled={telegramTesting}>
+                      {telegramTesting ? 'Mengirim…' : 'Kirim tes'}
+                    </button>
+                  </div>
+                ) : telegramCode ? (
+                  <div className="reminder-steps">
+                    <div>Buka bot lalu tekan <b>Start</b>. Kode sudah terisi otomatis.</div>
+                    {telegramBotUsername ? (
+                      <a className="win95-btn primary reminder-action" href={`https://t.me/${telegramBotUsername.replace('@', '')}?start=${encodeURIComponent(telegramCode)}`} target="_blank" rel="noopener noreferrer">
+                        Buka Telegram
+                      </a>
+                    ) : (
+                      <div className="reminder-warn">
+                        Nama bot belum diatur. Minta admin mengisinya, atau pakai notifikasi perangkat di atas.
+                      </div>
+                    )}
+                    <div className="reminder-code">
+                      Kalau diminta manual, kirim: <code>/start {telegramCode}</code>
+                    </div>
+                    <button type="button" className="win95-btn reminder-inline-btn" onClick={() => { setTelegramCode(''); fetchData() }}>
+                      Saya sudah tekan Start
+                    </button>
+                  </div>
+                ) : (
+                  <button type="button" className="win95-btn primary reminder-action" onClick={genCode} disabled={codeGenerating}>
+                    {codeGenerating ? 'Menyiapkan…' : 'Hubungkan Telegram'}
+                  </button>
+                )}
+              </div>
+
+              <div className="reminder-foot">
+                Pilihan lanjutan (waktu pengingat, suara) ada di <b>Alat → Pengaturan</b>.
+              </div>
+            </div>
+            <div className="win95-dialog-footer">
+              <button className="win95-btn primary" onClick={() => setDialogType(null)}>Selesai</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {dialogType === 'telegram' && (
         <div className="win95-dialog-overlay" role="presentation" onClick={() => setDialogType(null)}>
           <div className="win95-dialog" role="dialog" aria-modal="true" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()} style={{ maxWidth: 'min(420px, 95vw)' }}>
