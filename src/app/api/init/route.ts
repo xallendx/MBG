@@ -2,6 +2,9 @@ import { NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { requireUser } from '@/lib/auth'
 import { computeStatus, getNextReadyAt } from '@/lib/schedule'
+import { handleApiError } from '@/lib/api'
+import { SETTINGS_DEFAULTS, getTimezone, resolveSettings } from '@/lib/settings'
+import { logError } from '@/lib/logger'
 
 // GET /api/init — combined initialization endpoint
 // Fetches all app data in a single request to avoid multiple Vercel serverless cold starts.
@@ -14,31 +17,35 @@ export async function GET() {
     }
 
     // ── Fetch settings + user first (needed for timezone in task enrichment) ──
-    const [userResult, settingsResult] = await Promise.all([
-      db.user.findUnique({
+    // Satu query user saja: settings diturunkan di sini lalu dipakai ulang, tidak
+    // perlu query kedua hanya untuk membaca kolom yang sama.
+    const userResult = await db.user
+      .findUnique({
         where: { id: userId },
         select: { id: true, username: true, displayName: true, role: true, settings: true },
-      }).then((user) => {
+      })
+      .then((user) => {
         if (!user) return null
-        let settings: Record<string, unknown> = {}
-        try { settings = user.settings ? JSON.parse(user.settings) : {} } catch { /* use empty */ }
+        const settings = resolveSettings(user.settings, 'GET /api/init')
         return {
-          userId: user.id, username: user.username, displayName: user.displayName, role: user.role, authenticated: true,
-          timezone: (settings.timezone as string) || 'WIB',
+          userId: user.id,
+          username: user.username,
+          displayName: user.displayName,
+          role: user.role,
+          authenticated: true,
+          timezone: getTimezone(user.settings, 'GET /api/init'),
+          settings,
         }
-      }).catch((e) => {
-        console.error('[GET /api/init] user fetch failed', e)
+      })
+      .catch((e) => {
+        logError('GET /api/init', e, { phase: 'user fetch' })
         return null
-      }),
-      // Settings will be extracted from userResult above; this placeholder keeps Promise.all happy
-      Promise.resolve(null),
-    ])
+      })
 
-    // Extract timezone from user result
-    const userTz = (userResult as Record<string, unknown> | null)?.timezone as string || 'WIB'
+    const userTz = (userResult?.timezone as string) || 'WIB'
 
     // ── Fetch remaining data in parallel (tasks need timezone from above) ──
-    const [tasksResult, projectsResult, settingsOnlyResult, notesResult, templatesResult] = await Promise.all([
+    const [tasksResult, projectsResult, notesResult, templatesResult] = await Promise.all([
       // ── Tasks — select ONLY needed fields ──
       db.task
         .findMany({
@@ -47,6 +54,7 @@ export async function GET() {
             id: true, name: true, description: true, link: true,
             scheduleType: true, scheduleConfig: true, notes: true,
             pinned: true, priority: true, position: true,
+            createdAt: true, updatedAt: true,
             project: { select: { id: true, name: true, color: true } },
             logs: { select: { completedAt: true }, orderBy: { completedAt: 'desc' }, take: 1 },
             _count: { select: { logs: true } },
@@ -84,6 +92,7 @@ export async function GET() {
                 status, nextReadyAt: nextReady instanceof Date && !isNaN(nextReady.getTime()) ? nextReady.toISOString() : null,
                 lastCompletedAt: lastCompleted?.toISOString() || null,
                 cooldownRemaining, cooldownMs, logCount: t._count.logs, project: t.project || null,
+                createdAt: t.createdAt.toISOString(), updatedAt: t.updatedAt.toISOString(),
               }
             } catch (e) {
               console.error('[GET /api/init] task enrichment error for', t.id, e)
@@ -93,6 +102,7 @@ export async function GET() {
                 pinned: t.pinned, priority: t.priority,
                 status: 'siap' as const, nextReadyAt: null, lastCompletedAt: null,
                 cooldownRemaining: '', cooldownMs: 0, logCount: t._count.logs, project: t.project || null,
+                createdAt: t.createdAt.toISOString(), updatedAt: t.updatedAt.toISOString(),
               }
             }
           })
@@ -128,16 +138,6 @@ export async function GET() {
         return null
       }),
 
-      // ── Settings (fetched again for clean response — user query already has it) ──
-      db.user.findUnique({ where: { id: userId }, select: { settings: true } })
-        .then((user) => {
-          try { return user?.settings ? JSON.parse(user.settings) : {} } catch { return {} }
-        })
-        .catch((e) => {
-          console.error('[GET /api/init] settings fetch failed', e)
-          return null
-        }),
-
       // ── Notes ──
       db.note.findMany({
         where: { userId },
@@ -172,7 +172,7 @@ export async function GET() {
       user: userResponse,
       tasks: tasksResult ?? [],
       projects: projectsResult ?? [],
-      settings: settingsOnlyResult ?? {},
+      settings: userResult?.settings ?? SETTINGS_DEFAULTS,
       notes: notesResult ?? [],
       templates: templatesResult ?? [],
     })
@@ -180,7 +180,6 @@ export async function GET() {
     response.headers.set('Cache-Control', 'private, max-age=0, must-revalidate')
     return response
   } catch (e) {
-    console.error('[GET /api/init] unexpected error', e)
-    return NextResponse.json({ error: 'Request failed' }, { status: 500 })
+    return handleApiError('api/init', e)
   }
 }

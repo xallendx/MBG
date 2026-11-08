@@ -1,19 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { requireCurrentUser } from '@/lib/auth'
+import { handleApiError, parseBody } from '@/lib/api'
+import { pushSubscribeSchema } from '@/lib/schemas'
+import { z } from 'zod'
 
 // POST /api/push/subscribe — save push subscription
-export async function POST(req: NextRequest) {
+export async function POST(req: Request) {
   try {
     const user = await requireCurrentUser()
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-    const body = await req.json()
-    const { endpoint, keys } = body
-
-    if (!endpoint || !keys || !keys.auth || !keys.p256dh) {
-      return NextResponse.json({ error: 'Invalid subscription data' }, { status: 400 })
-    }
+    const { endpoint, keys } = await parseBody(req, pushSubscribeSchema)
 
     // Security: prevent subscription hijacking — check ownership before upsert
     const existing = await db.pushSubscription.findUnique({ where: { endpoint } })
@@ -40,30 +38,25 @@ export async function POST(req: NextRequest) {
     }
 
     return NextResponse.json({ success: true })
-  } catch {
-    return NextResponse.json({ error: 'Request failed' }, { status: 500 })
+  } catch (e) {
+    return handleApiError('api/push/subscribe', e)
   }
 }
 
 // DELETE /api/push/subscribe — remove push subscription
-export async function DELETE(req: NextRequest) {
+export async function DELETE(req: Request) {
   try {
     const user = await requireCurrentUser()
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-    const body = await req.json()
-    const { endpoint } = body
-
-    if (!endpoint) {
-      return NextResponse.json({ error: 'Endpoint required' }, { status: 400 })
-    }
+    const { endpoint } = await parseBody(req, z.object({ endpoint: z.string().min(1).max(2000) }))
 
     await db.pushSubscription.deleteMany({
       where: { userId: user.id, endpoint }
     })
 
     return NextResponse.json({ success: true })
-  } catch {
-    return NextResponse.json({ error: 'Request failed' }, { status: 500 })
+  } catch (e) {
+    return handleApiError('api/push/subscribe', e)
   }
 }

@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { requireUser } from '@/lib/auth'
 import { canReset } from '@/lib/schedule'
+import { handleApiError } from '@/lib/api'
 
 export async function POST(_: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -11,6 +12,9 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
 
     // Use transaction to prevent race condition
     const result = await db.$transaction(async (tx) => {
+      // Serialize with completion and undo before inspecting the schedule.
+      const locked = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM "Task" WHERE id = ${id} AND "userId" = ${userId} FOR UPDATE`
+      if (!locked.length) return { error: 'Not found', status: 404 as const }
       const task = await tx.task.findFirst({ where: { id, userId } })
       if (!task) return { error: 'Not found', status: 404 as const }
 
@@ -34,7 +38,7 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
 
     if ('error' in result) return NextResponse.json({ error: result.error }, { status: result.status })
     return NextResponse.json({ success: true })
-  } catch {
-    return NextResponse.json({ error: 'Request failed' }, { status: 500 })
+  } catch (e) {
+    return handleApiError('api/tasks/[id]/reset', e)
   }
 }

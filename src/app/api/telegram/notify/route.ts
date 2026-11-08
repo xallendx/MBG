@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { requireUser } from '@/lib/auth'
 import { sendTelegramMessage } from '@/lib/telegram'
+import { handleApiError } from '@/lib/api'
+import { parseSettings } from '@/lib/settings'
 
 function escHtml(s: string) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -22,9 +24,7 @@ export async function POST(req: NextRequest) {
     if (!user) return NextResponse.json({ error: 'User tidak ditemukan' }, { status: 404 })
 
     let settings: Record<string, unknown> = {}
-    if (user.settings) {
-      try { settings = JSON.parse(user.settings) } catch { settings = {} }
-    }
+    settings = parseSettings(user.settings, 'POST /api/telegram/notify')
     const telegramChatId = settings.telegramChatId
 
     if (!telegramChatId) {
@@ -35,7 +35,7 @@ export async function POST(req: NextRequest) {
     await sendTelegramMessage(telegramChatId as string | number, typeof message === 'string' ? message : JSON.stringify(message))
 
     return NextResponse.json({ success: true, message: 'Notifikasi terkirim' })
-  } catch {
-    return NextResponse.json({ error: 'Request failed' }, { status: 500 })
+  } catch (e) {
+    return handleApiError('api/telegram/notify', e)
   }
 }

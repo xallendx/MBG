@@ -3,23 +3,15 @@ import { db } from '@/lib/db'
 import bcrypt from 'bcryptjs'
 import crypto from 'crypto'
 import { setAuthCookie } from '@/lib/auth'
+import { clientIp, consumeRateLimit, resetRateLimit } from '@/lib/rate-limit'
+import { ApiError, handleApiError, parseBody } from '@/lib/api'
+import { loginSchema } from '@/lib/schemas'
 
-// In-memory rate limiter for login attempts
-const loginAttempts = new Map<string, { count: number; windowStart: number }>()
+// Rate limit berbasis database — lihat src/lib/rate-limit.ts untuk alasannya
+// (Map in-memory tidak berfungsi di serverless: tiap instance punya memori
+// sendiri dan cold start menghapusnya).
 const MAX_LOGIN_ATTEMPTS = 10
 const LOGIN_WINDOW_MS = 15 * 60 * 1000 // 15 minutes
-
-function isLoginRateLimited(key: string): boolean {
-  const now = Date.now()
-  const entry = loginAttempts.get(key)
-  if (!entry || now - entry.windowStart > LOGIN_WINDOW_MS) {
-    loginAttempts.set(key, { count: 1, windowStart: now })
-    return false
-  }
-  if (entry.count >= MAX_LOGIN_ATTEMPTS) return true
-  entry.count++
-  return false
-}
 
 async function verifyPassword(password: string, hash: string): Promise<{ match: boolean; newHash?: string }> {
   if (hash.startsWith('$2')) {
@@ -37,17 +29,22 @@ async function verifyPassword(password: string, hash: string): Promise<{ match: 
 
 export async function POST(req: Request) {
   try {
-    const { username, password } = await req.json()
-    if (!username || !password) {
-      return NextResponse.json({ error: 'Username dan password wajib diisi' }, { status: 400 })
-    }
-    if (password.length > 128) {
-      return NextResponse.json({ error: 'Password terlalu panjang' }, { status: 400 })
-    }
+    const ip = clientIp(req)
+    const { username, password } = await parseBody(req, loginSchema)
 
-    // Rate limiting by username (prevent brute force)
-    if (isLoginRateLimited(username)) {
-      return NextResponse.json({ error: 'Terlalu banyak percobaan login. Coba lagi dalam 15 menit.' }, { status: 429 })
+    // Rate limit dua lapis: per username (target akun) dan per IP (satu sumber
+    // yang menembak banyak username). Keduanya harus di bawah batas.
+    const uname = String(username).toLowerCase().slice(0, 64)
+    const [byUser, byIp] = await Promise.all([
+      consumeRateLimit(`login:user:${uname}`, MAX_LOGIN_ATTEMPTS, LOGIN_WINDOW_MS),
+      consumeRateLimit(`login:ip:${ip}`, MAX_LOGIN_ATTEMPTS * 3, LOGIN_WINDOW_MS),
+    ])
+    if (!byUser.allowed || !byIp.allowed) {
+      const retry = Math.max(byUser.retryAfterSeconds, byIp.retryAfterSeconds, 60)
+      return NextResponse.json(
+        { error: `Terlalu banyak percobaan login. Coba lagi dalam ${Math.ceil(retry / 60)} menit.` },
+        { status: 429, headers: { 'Retry-After': String(retry) } }
+      )
     }
 
     const user = await db.user.findUnique({ where: { username } })
@@ -69,14 +66,14 @@ export async function POST(req: Request) {
       })
     }
 
-    // Clear rate limit on successful login
-    loginAttempts.delete(username)
+    // Hitungan per-username direset setelah login berhasil supaya user sah
+    // tidak "terbawa" sisa percobaan gagal sebelumnya.
+    await resetRateLimit(`login:user:${uname}`)
 
     const res = NextResponse.json({ success: true, user: { id: user.id, username: user.username, displayName: user.displayName, role: user.role } })
     setAuthCookie(res, user.id)
     return res
   } catch (e) {
-    console.error('Login error:', e)
-    return NextResponse.json({ error: 'Gagal login' }, { status: 500 })
+    return handleApiError('POST /api/auth/login', e)
   }
 }

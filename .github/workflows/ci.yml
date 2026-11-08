@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: mbg_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mbg_test?schema=public
+      DIRECT_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mbg_test?schema=public
+      COOKIE_SECRET: ci-only-secret-not-used-in-production
+      CRON_SECRET: ci-only-cron-secret
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Terapkan migration ke database bersih
+        # Ini juga menguji bahwa folder prisma/migrations benar-benar bisa
+        # membangun schema dari nol (dulu tidak ada migration sama sekali).
+        run: npx prisma migrate deploy
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Unit test (logika jadwal)
+        run: npm test
+
+      - name: Build produksi
+        run: npm run build

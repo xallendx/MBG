@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { requireUser } from '@/lib/auth'
+import { handleApiError } from '@/lib/api'
 
 const VALID_SCHEDULE_TYPES = ['sekali', 'harian', 'mingguan', 'jam_tertentu', 'tanggal_spesifik', 'kustom']
 const VALID_PRIORITIES = ['high', 'medium', 'low']
@@ -44,7 +45,7 @@ export async function GET(_: Request, { params }: { params: Promise<{ id: string
         }
       }),
     })
-  } catch {
-    return NextResponse.json({ error: 'Gagal memproses permintaan' }, { status: 500 })
+  } catch (e) {
+    return handleApiError('GET /api/projects/[id]/export', e)
   }
 }

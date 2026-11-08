@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { sendTelegramMessage } from '@/lib/telegram'
 import { getNextReadyAt, computeStatus } from '@/lib/schedule'
+import { logError } from '@/lib/logger'
+import { getTimezone, parseSettings } from '@/lib/settings'
 
 function escHtml(s: string) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -34,12 +36,11 @@ async function findUserByTelegramCode(code: string) {
     select: { id: true, settings: true }
   })
   for (const u of candidates) {
-    try {
-      const settings = JSON.parse(u.settings)
-      if (settings.telegramCode === code && settings.telegramCodeExpiry > Date.now()) {
-        return u
-      }
-    } catch { /* skip */ }
+    const settings = parseSettings(u.settings, 'telegram/webhook:findUserByCode')
+    const expiry = Number(settings.telegramCodeExpiry ?? 0)
+    if (settings.telegramCode === code && expiry > Date.now()) {
+      return u
+    }
   }
   return null
 }
@@ -52,26 +53,21 @@ async function findUserByTelegramChatId(chatId: number) {
     select: { id: true, settings: true }
   })
   for (const u of candidates) {
-    try {
-      const settings = JSON.parse(u.settings)
-      if (settings.telegramChatId === chatId) {
-        return u
-      }
-    } catch { /* skip */ }
+    const settings = parseSettings(u.settings, 'telegram/webhook:findUserByChatId')
+    if (String(settings.telegramChatId) === String(chatId)) {
+      return u
+    }
   }
   return null
 }
 
 export async function POST(req: NextRequest) {
   try {
-    // Verify secret_token if TELEGRAM_WEBHOOK_SECRET is configured
+    // Fail closed: an unconfigured webhook must not accept forged updates.
     const webhookSecret = process.env.TELEGRAM_WEBHOOK_SECRET
-    if (webhookSecret) {
-      const providedToken = req.headers.get('x-telegram-bot-api-secret-token')
-      if (providedToken !== webhookSecret) {
-        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-      }
-    }
+    if (!webhookSecret) return NextResponse.json({ error: 'TELEGRAM_WEBHOOK_SECRET belum diatur' }, { status: 503 })
+    const providedToken = req.headers.get('x-telegram-bot-api-secret-token')
+    if (providedToken !== webhookSecret) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
     const body = await req.json()
     const message = body.message
@@ -105,12 +101,15 @@ export async function POST(req: NextRequest) {
       }
 
       // Link Telegram
-      const settings = JSON.parse(matchedUser.settings)
+      const settings = parseSettings(matchedUser.settings, 'telegram/webhook:start')
       delete settings.telegramCode
       delete settings.telegramCodeExpiry
       settings.telegramChatId = chatId
       settings.telegramId = String(chatId)
-      settings.telegramName = from ? `${from.first_name || ''}${from.last_name ? ' ' + from.last_name : ''}`.trim() : 'User'
+      const telegramName = from
+        ? `${from.first_name || ''}${from.last_name ? ' ' + from.last_name : ''}`.trim()
+        : 'User'
+      settings.telegramName = telegramName
 
       await db.user.update({
         where: { id: matchedUser.id },
@@ -120,7 +119,7 @@ export async function POST(req: NextRequest) {
         }
       })
 
-      await sendTelegramMessage(chatId, `✅ Telegram berhasil dihubungkan!\n\nAkun: ${escHtml(settings.telegramName)}\n\nKirim /status untuk melihat ringkasan task Anda.`, 'HTML')
+      await sendTelegramMessage(chatId, `✅ Telegram berhasil dihubungkan!\n\nAkun: ${escHtml(String(settings.telegramName))}\n\nKirim /status untuk melihat ringkasan task Anda.`, 'HTML')
       return NextResponse.json({ ok: true })
     }
 
@@ -134,8 +133,7 @@ export async function POST(req: NextRequest) {
       }
 
       // Get user timezone for schedule calculations
-      let userTz = 'WIB'
-      try { userTz = (JSON.parse(matchedUser.settings).timezone as string) || 'WIB' } catch { /* default */ }
+      const userTz = getTimezone(matchedUser.settings, 'telegram/webhook:status')
 
       const tasks = await db.task.findMany({
         where: { userId: matchedUser.id },
@@ -176,7 +174,10 @@ export async function POST(req: NextRequest) {
     // Unknown command
     await sendTelegramMessage(chatId, 'Perintah tidak dikenali. Kirim /status untuk melihat ringkasan task.')
     return NextResponse.json({ ok: true })
-  } catch {
+  } catch (e) {
+    // Telegram akan mencoba kirim ulang kalau balasan bukan 200, jadi kegagalan
+    // tetap dibalas ok:true — tapi sekarang dicatat, tidak lagi ditelan diam-diam.
+    logError('POST /api/telegram/webhook', e)
     return NextResponse.json({ ok: true })
   }
 }

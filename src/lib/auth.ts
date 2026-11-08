@@ -4,15 +4,16 @@ import { NextResponse } from 'next/server'
 import crypto from 'crypto'
 
 // HMAC cookie signing — prevents tampering with mbg_user_id cookie
-const COOKIE_SECRET = process.env.COOKIE_SECRET
-if (!COOKIE_SECRET && process.env.NODE_ENV === 'production') {
-  console.warn('[SECURITY] COOKIE_SECRET is not set. Using fallback — set it in Vercel env vars for proper security.')
+function cookieSecret(): string {
+  const secret = process.env.COOKIE_SECRET
+  if (secret) return secret
+  // Never sign or verify production sessions using a publicly known fallback.
+  if (process.env.NODE_ENV === 'production') throw new Error('COOKIE_SECRET wajib diatur pada production')
+  return 'dev-only-do-not-use-in-production'
 }
 
-const _SECRET = COOKIE_SECRET || (process.env.NODE_ENV === 'production' ? 'mbg-production-fallback-v2-change-me' : 'dev-only-do-not-use-in-production')
-
 function signCookie(userId: string): string {
-  const sig = crypto.createHmac('sha256', _SECRET).update(userId).digest('hex').slice(0, 32)
+  const sig = crypto.createHmac('sha256', cookieSecret()).update(userId).digest('hex').slice(0, 32)
   return `${userId}.${sig}`
 }
 
@@ -21,7 +22,7 @@ function verifyCookie(value: string): string | null {
   if (dotIdx === -1) return null
   const userId = value.slice(0, dotIdx)
   const sig = value.slice(dotIdx + 1)
-  const expected = crypto.createHmac('sha256', _SECRET).update(userId).digest('hex').slice(0, 32)
+  const expected = crypto.createHmac('sha256', cookieSecret()).update(userId).digest('hex').slice(0, 32)
   // Use timing-safe comparison to prevent timing attacks
   try {
     const sigBuf = Buffer.from(sig, 'utf8')

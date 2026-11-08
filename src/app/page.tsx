@@ -1,6 +1,10 @@
 'use client'
 
+import { isSafeHttpUrl } from '@/lib/safe-url'
+
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { scheduleInputError } from '@/lib/schedule-input'
+import { PRIORITY_DOT, PRIORITY_LABEL, SCHEDULE_LABELS, cooldownColor, cooldownIcon, priorityDot, priorityLabel, scheduleLabel } from '@/lib/task-view'
 
 /* ===== Types ===== */
 interface Note {
@@ -17,6 +21,7 @@ interface Task {
   cooldownRemaining: string; cooldownMs: number
   project: { id: string; name: string; color: string } | null
   createdAt: string
+  logCount?: number
 }
 
 interface Project {
@@ -32,16 +37,20 @@ interface Settings {
   timeFormat?: string
 }
 
+type CompletionToken = { id: string; logId: string }
+
 interface TaskTemplate {
   id: string; name: string; description: string | null; link: string | null
   scheduleType: string; scheduleConfig: string; priority: string
   createdAt: string; updatedAt: string
 }
 
-const SCHEDULE_LABELS: Record<string, string> = {
-  sekali: 'Sekali', harian: 'Harian', mingguan: 'Mingguan',
-  jam_tertentu: 'Jam Tertentu', tanggal_spesifik: 'Tgl Spesifik', kustom: 'Kustom'
-}
+const SECTIONS: { status: 'siap' | 'cooldown' | 'selesai'; label: string; icon: string; color: string }[] = [
+  { status: 'siap', label: 'Siap dikerjakan', icon: '✅', color: 'var(--win95-siap)' },
+  { status: 'cooldown', label: 'Menunggu', icon: '⏳', color: '#6b6b00' },
+  { status: 'selesai', label: 'Selesai', icon: '✔️', color: '#606060' },
+]
+
 const DAYS_ID = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu']
 const TZ_OPTIONS = [
   { value: 'WIB', label: 'WIB (UTC+7)' },
@@ -49,8 +58,6 @@ const TZ_OPTIONS = [
   { value: 'WIT', label: 'WIT (UTC+9)' }
 ]
 const PROJECT_COLORS = ['#000080', '#008000', '#800000', '#808000', '#800080', '#008080', '#FF6600', '#9900CC']
-const PRIORITY_DOT: Record<string, string> = { high: '#CC0000', medium: '#DAA520', low: '#228B22' }
-const PRIORITY_LABEL: Record<string, string> = { high: '🔴 Tinggi', medium: '🟡 Sedang', low: '🟢 Rendah' }
 
 /* ===== Context menu viewport clamp — pre-position before render (rough estimate) ===== */
 const clampPos = (x: number, y: number) => {
@@ -114,7 +121,7 @@ export default function MBGPage() {
   const [confirmLoading, setConfirmLoading] = useState(false)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; task: Task } | null>(null)
   const [projectContextMenu, setProjectContextMenu] = useState<{ x: number; y: number; project: Project } | null>(null)
-  const [toasts, setToasts] = useState<{ msg: string; type: 'success' | 'error' | 'info'; id: number }[]>([])
+  const [toasts, setToasts] = useState<{ msg: string; type: 'success' | 'error' | 'info'; id: number; actionLabel?: string; onAction?: () => void }[]>([])
   const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({})
   const [openMenu, setOpenMenu] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
@@ -168,6 +175,7 @@ export default function MBGPage() {
   const [undoCountdown, setUndoCountdown] = useState(0) // countdown untuk tombol undo (detik tersisa)
   const workingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const undoTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const workingCompletionRef = useRef<string | null>(null)
   const workingActiveRef = useRef(false) // Guard: prevents undo UI from appearing after cancel
 
   // Templates (Feature 3)
@@ -202,7 +210,11 @@ export default function MBGPage() {
 
   // Fix #7: Batch completing
   const [batchCompleting, setBatchCompleting] = useState<string | null>(null)
+  // Aksi massal: centang beberapa task lalu selesaikan/reset sekaligus.
+  const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set())
+  const [selectMode, setSelectMode] = useState(false)
   const [savingTask, setSavingTask] = useState(false)
+  const [taskFormError, setTaskFormError] = useState('')
   const [savingProject, setSavingProject] = useState(false)
   // Global loading bar: shows thin progress at top of window ONLY for slow operations (>150ms)
   // This prevents visual noise on fast operations while still giving feedback on slow ones
@@ -262,6 +274,18 @@ export default function MBGPage() {
   const [registerPassword, setRegisterPassword] = useState('')
   const [registerDisplayName, setRegisterDisplayName] = useState('')
   const [registerInviteCode, setRegisterInviteCode] = useState('')
+  // True kalau database belum punya user sama sekali → pendaftar pertama jadi admin
+  const [bootstrapMode, setBootstrapMode] = useState(false)
+
+  useEffect(() => {
+    if (authenticated) return
+    let alive = true
+    fetch('/api/auth/register', { cache: 'no-store' })
+      .then(r => r.json())
+      .then(d => { if (alive) setBootstrapMode(!!d.bootstrap) })
+      .catch(() => { /* diamkan: form tetap bisa dipakai */ })
+    return () => { alive = false }
+  }, [authenticated])
   const [authLoading, setAuthLoading] = useState(false)
   const [authError, setAuthError] = useState('')
 
@@ -735,10 +759,23 @@ export default function MBGPage() {
     if (authUser?.id) registerPushRef.current(authUser.id)
   }, [authUser?.id])
 
-  // Periodic sync — stable interval, always calls latest fetchData
+  // Periodic sync — hanya saat tab terlihat.
+  // Sebelumnya interval tetap berjalan walau tab di background/minimized:
+  // setiap 60 detik memuat ulang SELURUH data (project + task + log) padahal
+  // tidak ada yang melihatnya. Sekarang polling dilewati saat tab tidak aktif,
+  // dan langsung menyegarkan sekali ketika tab kembali terlihat.
   useEffect(() => {
-    const i = setInterval(() => fetchDataRef.current(false, true), 60000) // Reduced from 30s to 60s — less aggressive
-    return () => clearInterval(i)
+    const tick = () => {
+      if (typeof document !== 'undefined' && document.hidden) return
+      fetchDataRef.current(false, true)
+    }
+    const i = setInterval(tick, 60000)
+    const onVisible = () => { if (!document.hidden) fetchDataRef.current(false, true) }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      clearInterval(i)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
   }, [])
 
   // Periodic cache save — capture optimistic mutations between server syncs
@@ -751,9 +788,19 @@ export default function MBGPage() {
   // Scheduler: panggil /api/notify/run setiap 30 detik untuk Telegram notif
   useEffect(() => {
     if (!authenticated) return
-    const run = async () => { try { await fetch('/api/notify/run', { method: 'POST', credentials: 'include', headers: getAuthHeaders() }) } catch { /* silent */ } }
+    // Catch-up notifikasi tetap dipertahankan sebagai jaring pengaman kalau cron
+    // server belum jalan, tapi dilewati saat tab tidak aktif (cron server yang
+    // menangani kasus itu) — hemat request dan kuota Telegram.
+    const run = async () => {
+      if (typeof document !== 'undefined' && document.hidden) return
+      try {
+        await fetch('/api/notify/run', { method: 'POST', credentials: 'include', headers: getAuthHeaders() })
+      } catch {
+        // Diabaikan: ini jalur opsional, cron server tetap sumber utama.
+      }
+    }
     run()
-    const iv = setInterval(run, 60000) // Reduced from 30s to 60s
+    const iv = setInterval(run, 60000)
     return () => clearInterval(iv)
   }, [authenticated])
 
@@ -1025,16 +1072,28 @@ export default function MBGPage() {
   useEffect(() => { if (authenticated && !loading) templatesCacheRef.current = templates }, [templates, authenticated, loading])
   useEffect(() => { if (authenticated && !loading) settingsCacheRef.current = settings }, [settings, authenticated, loading])
 
-  const toast = (msg: string, type: 'success' | 'error' | 'info' = 'info') => {
+  /**
+   * Toast with optional action button (e.g. "Undo").
+   * Toasts that carry an action stay on screen longer so the user actually has
+   * time to react — a 2.5s window is not enough to notice and click.
+   */
+  const toast = (
+    msg: string,
+    type: 'success' | 'error' | 'info' = 'info',
+    opts?: { actionLabel?: string; onAction?: () => void; duration?: number }
+  ) => {
     const id = ++toastIdRef.current
-    setToasts(p => [...p, { msg, type, id }])
+    setToasts(p => [...p, { msg, type, id, actionLabel: opts?.actionLabel, onAction: opts?.onAction }])
+    const duration = opts?.duration ?? (opts?.actionLabel ? 8000 : type === 'error' ? 5000 : 3000)
     const timer = setTimeout(() => {
       setToasts(p => p.filter(t => t.id !== id))
       const idx = toastTimersRef.current.indexOf(timer)
       if (idx > -1) toastTimersRef.current.splice(idx, 1)
-    }, type === 'error' ? 4000 : 2500)
+    }, duration)
     toastTimersRef.current.push(timer)
   }
+
+  const dismissToast = (id: number) => setToasts(p => p.filter(t => t.id !== id))
 
   /* ===== Auto-close notes panel when dialog opens (z-index conflict fix) ===== */
   useEffect(() => {
@@ -1048,13 +1107,16 @@ export default function MBGPage() {
     if (completingIdsRef.current.has(id)) return
     completingIdsRef.current.add(id)
     setCompletingIds(p => new Set(p).add(id))
+    const previousTask = tasks.find(t => t.id === id)
+    const taskName = previousTask?.name || ''
     // BUG FIX: TRUE optimistic update — change status BEFORE API call for instant feedback
     setTasks(prev => prev.map(t => t.id === id ? { ...t, status: 'selesai' as const, cooldownRemaining: '', cooldownMs: 0 } : t))
     lastWriteTime.current = Date.now()
     try {
       const res = await api(`/api/tasks/${id}/complete`, { method: 'POST' })
       if (!res.ok) {
-        // Revert on failure
+        // Pulihkan tampilan segera; sinkronisasi tetap dilakukan sesudahnya.
+        if (previousTask) setTasks(prev => prev.map(t => t.id === id ? previousTask : t))
         lastWriteTime.current = 0
         toast('Gagal menyelesaikan task', 'error')
         delayedFetch()
@@ -1073,11 +1135,107 @@ export default function MBGPage() {
           logCount: data.task.logCount ?? ((t as unknown as Record<string, unknown>).logCount as number || 0) + 1,
         } : t))
       }
-      toast('Task selesai!', 'success')
+      const logId = typeof data.logId === 'string' ? data.logId : null
+      toast('Selesai: ' + (taskName || 'task'), 'success', logId ? {
+        actionLabel: 'Undo',
+        onAction: () => undoComplete(id, logId),
+      } : undefined)
+      delayedFetch()
+      return logId
+    }
+    catch { if (previousTask) setTasks(prev => prev.map(t => t.id === id ? previousTask : t)); lastWriteTime.current = 0; toast('Gagal menyelesaikan task', 'error'); delayedFetch() }
+    finally { completingIdsRef.current.delete(id); setCompletingIds(p => { const n = new Set(p); n.delete(id); return n }) }
+  }
+
+  /** Undo targets the exact log created by the corresponding action. */
+  const undoComplete = async (id: string, logId: string) => {
+    try {
+      const res = await api(`/api/tasks/${id}/undo`, jsonOpts('POST', { logId }))
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        toast(data.error || 'Tidak ada penyelesaian untuk dibatalkan', 'error')
+        return
+      }
+      lastWriteTime.current = 0
+      toast('Penyelesaian dibatalkan', 'info')
+      delayedFetch()
+    } catch {
+      toast('Gagal membatalkan (jaringan)', 'error')
+    }
+  }
+
+  /** Undo hanya task yang benar-benar berhasil diselesaikan. */
+  const undoManyComplete = async (tokens: CompletionToken[]) => {
+    const results = await Promise.allSettled(tokens.map(({ id, logId }) => api(`/api/tasks/${id}/undo`, jsonOpts('POST', { logId }))))
+    const ok = results.filter(r => r.status === 'fulfilled' && r.value.ok).length
+    lastWriteTime.current = 0
+    toast(ok === tokens.length ? `${ok} penyelesaian dibatalkan` : `${ok} dibatalkan, ${tokens.length - ok} gagal`, ok === tokens.length ? 'info' : 'error')
+    delayedFetch()
+  }
+
+  /* ===== Aksi massal ===== */
+  const bulkBusyRef = useRef(false)
+  const [bulkBusy, setBulkBusy] = useState(false)
+  const toggleBulk = (id: string) => setBulkSelected(prev => {
+    const next = new Set(prev)
+    if (next.has(id)) next.delete(id); else next.add(id)
+    return next
+  })
+  const clearBulk = () => setBulkSelected(new Set())
+  const exitSelectMode = () => { clearBulk(); setSelectMode(false) }
+
+  const runBulk = async (ids: string[], operation: 'complete' | 'reset') => {
+    if (bulkBusyRef.current) return
+    bulkBusyRef.current = true
+    setBulkBusy(true)
+    setConfirmData(null)
+    try {
+      const results = await Promise.allSettled(ids.map(id => api(`/api/tasks/${id}/${operation}`, { method: 'POST' })))
+      const succeeded = ids.filter((_, i) => {
+        const result = results[i]
+        return result.status === 'fulfilled' && result.value.ok
+      })
+      const tokens = operation === 'complete' ? (await Promise.all(results.map(async (r, i) => {
+        if (r.status !== 'fulfilled' || !r.value.ok) return null
+        const body = await r.value.json().catch(() => ({}))
+        return typeof body.logId === 'string' ? { id: ids[i], logId: body.logId } : null
+      }))).filter((t): t is CompletionToken => t !== null) : []
+      const successfulIds = new Set(succeeded)
+      const failed = ids.length - succeeded.length
+      if (!failed && bulkSelected.size === ids.length) setSelectMode(false)
+      setBulkSelected(prev => new Set([...prev].filter(id => !successfulIds.has(id))))
+      const label = operation === 'complete' ? 'diselesaikan' : 'di-reset'
+      toast(failed ? `${succeeded.length} ${label}, ${failed} gagal` : `${succeeded.length} task ${label}`,
+        failed ? 'error' : 'success',
+        tokens.length > 0
+          ? { actionLabel: tokens.length === succeeded.length ? 'Undo semua' : 'Undo yang tersedia', onAction: () => undoManyComplete(tokens) }
+          : undefined)
+    } finally {
+      bulkBusyRef.current = false
+      setBulkBusy(false)
+      lastWriteTime.current = 0
       delayedFetch()
     }
-    catch { lastWriteTime.current = 0; toast('Gagal menyelesaikan task', 'error'); delayedFetch() }
-    finally { completingIdsRef.current.delete(id); setCompletingIds(p => { const n = new Set(p); n.delete(id); return n }) }
+  }
+
+  const bulkComplete = () => {
+    const selected = tasks.filter(t => bulkSelected.has(t.id))
+    const ids = selected.filter(t => t.status === 'siap').map(t => t.id)
+    if (!ids.length) { toast('Tidak ada task siap di pilihan', 'info'); return }
+    const skipped = selected.length - ids.length
+    setConfirmData({ title: 'Selesaikan task pilihan',
+      message: `Selesaikan ${ids.length} task siap?${skipped ? ` ${skipped} task lain dilewati karena tidak siap.` : ''}`,
+      onConfirm: () => { void runBulk(ids, 'complete') } })
+  }
+
+  const bulkReset = () => {
+    const selected = tasks.filter(t => bulkSelected.has(t.id))
+    const ids = selected.filter(t => t.status !== 'siap' && t.scheduleType !== 'sekali' && t.scheduleType !== 'tanggal_spesifik').map(t => t.id)
+    if (!ids.length) { toast('Tidak ada task pilihan yang bisa di-reset', 'info'); return }
+    const skipped = selected.length - ids.length
+    setConfirmData({ title: 'Reset task pilihan',
+      message: `Reset ${ids.length} task? SELURUH riwayat penyelesaiannya akan dihapus dan tidak dapat dibatalkan.${skipped ? ` ${skipped} task lain dilewati karena tidak dapat di-reset.` : ''}`,
+      onConfirm: () => { void runBulk(ids, 'reset') } })
   }
 
   const resetTask = async (id: string) => {
@@ -1100,7 +1258,7 @@ export default function MBGPage() {
 
   const reset = (id: string) => {
     setConfirmData({
-      title: 'Reset Task', message: 'Yakin reset task ini? Log terakhir akan dihapus dan cooldown dimulai ulang.',
+      title: 'Hapus riwayat dan reset', message: 'Yakin reset task ini? Seluruh riwayat penyelesaiannya akan dihapus dan tidak dapat dibatalkan.',
       onConfirm: async () => { setConfirmData(null); await resetTask(id) }
     })
   }
@@ -1147,104 +1305,48 @@ export default function MBGPage() {
 
   const saveTask = async (skipDialogClose?: boolean) => {
     if (savingTask) return
-    if (!formName.trim()) { toast('Nama wajib diisi!', 'error'); return }
+    if (!formName.trim()) { setTaskFormError('Nama tugas wajib diisi.'); return }
+    const scheduleError = scheduleInputError(formScheduleType, formScheduleConfig)
+    if (scheduleError) { setTaskFormError(scheduleError); return }
+    if (formLink.trim()) {
+      try { const u = new URL(formLink.trim()); if (!['http:', 'https:'].includes(u.protocol)) throw new Error('protocol') }
+      catch { setTaskFormError('Link harus dimulai dengan http:// atau https://.'); return }
+    }
+    setTaskFormError('')
     const isAdd = dialogType === 'add'
-    const isEdit = dialogType === 'edit' && selectedTaskId
-    if (!isAdd && !isEdit) return
-
-    // Capture form values before any state changes
-    const taskName = formName.trim()
-    const taskDesc = formDesc || null
-    const taskLink = formLink || null
-    const taskScheduleType = formScheduleType
-    const taskScheduleConfig = formScheduleConfig
-    const taskProjectId = (formProjectId && formProjectId !== '__no_project__') ? formProjectId : null
-    const taskPriority = formPriority
-    const editTaskId = selectedTaskId
-
+    if (!isAdd && !(dialogType === 'edit' && selectedTaskId)) return
+    const editId = selectedTaskId
     setSavingTask(true)
-    // No showGlobalLoading — optimistic update gives instant feedback
-
-    // Optimistic update for ADD: create temp task immediately
-    let tempId: string | null = null
-    if (isAdd) {
-      tempId = 'temp-' + Date.now()
-      const newTask: Task = {
-        id: tempId, name: taskName, description: taskDesc, link: taskLink,
-        scheduleType: taskScheduleType, scheduleConfig: typeof taskScheduleConfig === 'string' ? taskScheduleConfig : JSON.stringify(taskScheduleConfig),
-        notes: null, pinned: false, priority: taskPriority,
-        status: 'siap', nextReadyAt: null, lastCompletedAt: null,
-        cooldownRemaining: '', cooldownMs: 0,
-        project: taskProjectId ? projects.find(p => p.id === taskProjectId) || null : null,
-        createdAt: new Date().toISOString()
-      }
-      setTasks(prev => [newTask, ...prev])
-      if (taskProjectId) setExpandedProjects(prev => new Set(prev).add(taskProjectId))
-    }
-    // Optimistic update for EDIT: update task in local state immediately
-    if (isEdit && editTaskId) {
-      setTasks(prev => prev.map(t => t.id === editTaskId ? {
-        ...t, name: taskName, description: taskDesc, link: taskLink,
-        scheduleType: taskScheduleType, scheduleConfig: typeof taskScheduleConfig === 'string' ? taskScheduleConfig : JSON.stringify(taskScheduleConfig),
-        priority: taskPriority
-      } : t))
-    }
-
-    // CRITICAL: Set write timestamp IMMEDIATELY to prevent periodic sync from overwriting optimistic state
-    lastWriteTime.current = Date.now()
-
-    // Close dialog immediately — user can already see the change
-    if (!skipDialogClose) {
-      setDialogType(null)
-      setSelectedTaskId(null)
-    }
-
     try {
-      const body = JSON.stringify({
-        name: taskName, description: taskDesc, link: taskLink,
-        scheduleType: taskScheduleType, scheduleConfig: taskScheduleConfig,
-        projectId: taskProjectId, priority: taskPriority
-      })
-      const makeOpts = (method: string) => ({ method, headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }, body, credentials: 'include' as RequestCredentials })
-      let res: Response
-      if (isAdd) {
-        res = await fetch('/api/tasks', makeOpts('POST'))
-        if (!res.ok) {
-          // Revert optimistic update on failure
-          if (tempId) setTasks(prev => prev.filter(t => t.id !== tempId))
-          lastWriteTime.current = 0
-          const err = await res.json().catch(() => ({})); toast('Gagal: ' + (err.error || res.statusText), 'error'); return
-        }
-        const data = await res.json()
-        toast('Task ditambahkan!', 'success')
-        // Replace temp ID with real ID
-        if (tempId && data.id) {
-          setTasks(prev => prev.map(t => t.id === tempId ? { ...t, id: data.id } : t))
-        }
-      } else if (isEdit && editTaskId) {
-        res = await fetch(`/api/tasks/${editTaskId}`, makeOpts('PUT'))
-        if (!res.ok) {
-          // Revert on failure — re-fetch from server
-          lastWriteTime.current = 0
-          const err = await res.json().catch(() => ({})); toast('Gagal: ' + (err.error || res.statusText), 'error')
-          delayedFetch()
-          return
-        }
-        toast('Task diperbarui!', 'success')
+      const res = await api(isAdd ? '/api/tasks' : `/api/tasks/${editId}`, jsonOpts(isAdd ? 'POST' : 'PUT', {
+        name: formName.trim(), description: formDesc || null, link: formLink || null,
+        scheduleType: formScheduleType, scheduleConfig: formScheduleConfig,
+        projectId: formProjectId && formProjectId !== '__no_project__' ? formProjectId : null, priority: formPriority,
+      }))
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        setTaskFormError(err.error || 'Tugas tidak tersimpan. Periksa data dan coba lagi.')
+        return
       }
-      lastWriteTime.current = Date.now()
-      delayedFetch()
-    } catch (e) {
-      console.error(e)
-      // Revert optimistic add on network error
-      if (isAdd && tempId) setTasks(prev => prev.filter(t => t.id !== tempId))
+      if (!skipDialogClose) { setDialogType(null); setSelectedTaskId(null) }
+      if (isAdd) {
+        // Tugas baru harus terlihat walaupun sebelumnya ada filter/pencarian aktif.
+        setViewMode('dashboard'); setActiveTab('all'); setDashFilterProject(null)
+        setDashFilterQuery(''); setSearchQuery(''); setBulkSelected(new Set()); setSelectMode(false)
+      }
+      toast(isAdd ? 'Tugas berhasil ditambahkan.' : 'Perubahan berhasil disimpan.', 'success')
       lastWriteTime.current = 0
-      toast('Gagal menyimpan task', 'error')
-    }
+      await fetchData(false, true)
+    } catch { setTaskFormError('Gagal menyimpan. Periksa koneksi dan coba lagi.') }
     finally { setSavingTask(false) }
   }
 
+  // Keep failed/in-flight note drafts for this session when the detail is closed.
+  const noteDraftsRef = useRef<Record<string, string>>({})
+  const [, setNoteDraftRevision] = useState(0)
   const saveNotes = async (id: string, notes: string) => {
+    noteDraftsRef.current[id] = notes
+    setNoteDraftRevision(v => v + 1)
     // Capture previous notes for potential revert
     const prevNotes = tasks.find(t => t.id === id)?.notes || ''
     // Optimistic: update local notes immediately
@@ -1253,8 +1355,11 @@ export default function MBGPage() {
       const res = await api(`/api/tasks/${id}`, jsonOpts('PUT', { notes }))
       if (!res.ok) {
         toast('Gagal menyimpan catatan', 'error')
-        // Revert optimistic update
+        // Revert server state in the list; the unsaved draft stays available.
         setTasks(prev => prev.map(t => t.id === id ? { ...t, notes: prevNotes } : t))
+      } else if (noteDraftsRef.current[id] === notes) {
+        delete noteDraftsRef.current[id]
+        setNoteDraftRevision(v => v + 1)
       }
     } catch {
       toast('Gagal menyimpan catatan', 'error')
@@ -1371,8 +1476,22 @@ export default function MBGPage() {
           const results = await Promise.allSettled(readyTasks.map(t => api(`/api/tasks/${t.id}/complete`, { method: 'POST' })))
           const ok = results.filter(r => r.status === 'fulfilled' && r.value.ok).length
           const fail = results.length - ok
-          if (fail === 0) toast(`${ok} task selesai!`)
-          else toast(`${ok} berhasil, ${fail} gagal`)
+          const doneTokens = (await Promise.all(results.map(async (r, i) => {
+            if (r.status !== 'fulfilled' || !r.value.ok) return null
+            const body = await r.value.json().catch(() => ({}))
+            return typeof body.logId === 'string' ? { id: readyTasks[i].id, logId: body.logId } : null
+          }))).filter((t): t is CompletionToken => t !== null)
+          if (fail === 0) {
+            toast(`${ok} task sekaligus diselesaikan`, 'success', doneTokens.length ? {
+              actionLabel: doneTokens.length === ok ? 'Undo semua' : 'Undo yang tersedia',
+              onAction: () => undoManyComplete(doneTokens),
+            } : undefined)
+          } else {
+            toast(`${ok} berhasil, ${fail} gagal`, 'error', doneTokens.length > 0 ? {
+              actionLabel: 'Undo',
+              onAction: () => undoManyComplete(doneTokens),
+            } : undefined)
+          }
           // Revert any that actually failed
           if (fail > 0) {
             const okIds = new Set<string>()
@@ -1610,9 +1729,8 @@ export default function MBGPage() {
   /* ===== Fix B4: Open link FIRST (avoid popup blocker), then complete ===== */
   const completeAndOpenLink = async (t: Task) => {
     // Open link FIRST while still in user click context (avoids popup blocker)
-    if (t.link) {
-      window.open(t.link, '_blank', 'noopener,noreferrer')
-    }
+    if (!isSafeHttpUrl(t.link)) { toast('Link tidak valid; edit tugas untuk memperbaikinya', 'error'); return }
+    window.open(t.link, '_blank', 'noopener,noreferrer')
     if (t.status === 'siap') {
       await complete(t.id)
     }
@@ -1628,7 +1746,7 @@ export default function MBGPage() {
     setWorkingCompleted(false)
     setUndoCountdown(0)
     if (t.project?.id) setExpandedProjects(prev => new Set(prev).add(t.project!.id))
-    if (t.link) window.open(t.link, '_blank', 'noopener,noreferrer')
+    if (isSafeHttpUrl(t.link)) window.open(t.link, '_blank', 'noopener,noreferrer')
     let count = 10
     workingTimerRef.current = setInterval(async () => {
       count--
@@ -1636,7 +1754,9 @@ export default function MBGPage() {
       if (count <= 0) {
         if (workingTimerRef.current) { clearInterval(workingTimerRef.current); workingTimerRef.current = null }
         try {
-          await complete(t.id)
+          const logId = await complete(t.id)
+          if (!logId) { cancelWorking(); return }
+          workingCompletionRef.current = logId
           // Guard: if user cancelled during the await, don't show undo UI
           if (!workingActiveRef.current) return
           setWorkingCompleted(true)
@@ -1678,10 +1798,12 @@ export default function MBGPage() {
   /* Fix B3: undoWorkingComplete deletes last log instead of full reset */
   const undoWorkingComplete = async () => {
     if (workingTaskId) {
-      // Optimistic: revert task status locally + cancel working UI immediately
+      // Only undo the completion created by this timer.
+      const logId = workingCompletionRef.current
       cancelWorking()
+      if (!logId) { toast('Penyelesaian tidak tersedia untuk dibatalkan', 'error'); return }
       try {
-        const res = await api(`/api/tasks/${workingTaskId}/undo`, { method: 'POST' })
+        const res = await api(`/api/tasks/${workingTaskId}/undo`, jsonOpts('POST', { logId }))
         if (!res.ok) { toast('Gagal membatalkan task', 'error'); delayedFetch(); return }
         toast('Task dibatalkan!', 'success')
         delayedFetch()
@@ -1843,11 +1965,6 @@ export default function MBGPage() {
         setLoginUsername(''); setLoginPassword('')
         fetchData(false, true)
         fetchNotes()
-        // Tampilkan help untuk user baru
-        if (!localStorage.getItem('mbg_help_shown')) {
-          const t = setTimeout(() => { setDialogType('help'); localStorage.setItem('mbg_help_shown', '1') }, 500)
-          miscTimeoutsRef.current.push(t)
-        }
       } else {
         setAuthError(data.error || 'Login gagal')
       }
@@ -1857,7 +1974,7 @@ export default function MBGPage() {
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!registerInviteCode.trim()) { setAuthError('Kode undangan wajib diisi'); return }
+    if (!bootstrapMode && !registerInviteCode.trim()) { setAuthError('Kode undangan wajib diisi. Minta kode ke admin.'); return }
     if (!registerUsername.trim() || !registerPassword.trim()) { setAuthError('Username dan password wajib diisi'); return }
     if (registerUsername.trim().length < 3) { setAuthError('Username minimal 3 karakter'); return }
     if (registerPassword.length < 6) { setAuthError('Password minimal 6 karakter'); return }
@@ -1871,8 +1988,13 @@ export default function MBGPage() {
         displayName: registerDisplayName.trim() || null,
         inviteCode: registerInviteCode.trim()
       }))
-      if (!res.ok) { setAuthError('Registrasi gagal. Silakan coba lagi.'); return }
-      const data = await res.json()
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        // Tampilkan pesan asli dari server (mis. "Kode undangan sudah digunakan")
+        // supaya user tahu apa yang salah, bukan "coba lagi" yang tidak informatif.
+        setAuthError(data.error || 'Registrasi gagal. Silakan coba lagi.')
+        return
+      }
       if (data.success) {
         setAuthenticated(true)
         setAuthUser(data.user)
@@ -1880,9 +2002,6 @@ export default function MBGPage() {
         setRegisterUsername(''); setRegisterPassword(''); setRegisterDisplayName(''); setRegisterInviteCode('')
         fetchData(false, true)
         fetchNotes()
-        // Tampilkan help untuk user baru (register selalu first time)
-        const ht = setTimeout(() => { setDialogType('help'); localStorage.setItem('mbg_help_shown', '1') }, 500)
-        miscTimeoutsRef.current.push(ht)
       } else {
         setAuthError(data.error || 'Registrasi gagal')
       }
@@ -1980,6 +2099,7 @@ export default function MBGPage() {
 
   /* ===== Openers ===== */
   const openAdd = (projectId: string | null) => {
+    setTaskFormError('')
     setFormProjectId(projectId)
     setFormName(''); setFormDesc(''); setFormLink(''); setFormScheduleType('sekali'); setFormScheduleConfig({})
     setFormPriority('medium')
@@ -1992,6 +2112,7 @@ export default function MBGPage() {
   }
 
   const openEdit = (t: Task) => {
+    setTaskFormError('')
     setFormName(t.name); setFormDesc(t.description || ''); setFormLink(t.link || '')
     setFormScheduleType(t.scheduleType)
     try { setFormScheduleConfig(JSON.parse(t.scheduleConfig)) } catch { setFormScheduleConfig({}) }
@@ -2002,7 +2123,7 @@ export default function MBGPage() {
   const openDetail = (t: Task) => { if (Date.now() - ctxOpenTimeRef.current < 300) return; detailRef.current = t; setSelectedTaskId(t.id); setDialogType('detail') }
   const openEditProject = (p: Project) => { setFormProjectName(p.name); setFormProjectColor(p.color); setSelectedTaskId(p.id); setDialogType('edit-project') }
   const openAddProject = () => { setFormProjectName(''); setFormProjectColor('#000080'); setDialogType('add-project') }
-  const openSettings = () => { const s = settings as Record<string, unknown>; setFormTimezone((s.timezone as string) || 'WIB'); setFormTimeFormat(s.timeFormat === '12' ? '12' : '24'); setFormAutoExpandSiap(s.autoExpandSiap !== false); setFormAutoCompleteLink(s.autoCompleteLink === true); setFormTelegramNotif(s.telegramNotifEnabled !== false); setFormBrowserNotif(s.browserNotifEnabled !== false); setFormNotifyBeforeMin((s.notifyBeforeCooldownMin as number) || 5); setFormAudioAlertEnabled(s.audioAlertEnabled !== false); setDialogType('settings') }
+  const openSettings = () => { const s = settings as Record<string, unknown>; setFormTimezone(['WIB', 'WITA', 'WIT'].includes(s.timezone as string) ? (s.timezone as string) : 'WIB'); setFormTimeFormat(s.timeFormat === '12' ? '12' : '24'); setFormAutoExpandSiap(s.autoExpandSiap !== false); setFormAutoCompleteLink(s.autoCompleteLink === true); setFormTelegramNotif(s.telegramNotifEnabled !== false); setFormBrowserNotif(s.browserNotifEnabled !== false); setFormNotifyBeforeMin((s.notifyBeforeCooldownMin as number) || 5); setFormAudioAlertEnabled(s.audioAlertEnabled !== false); setDialogType('settings') }
 
   /* ===== Folder toggle ===== */
   const toggleFolder = (projectId: string) => {
@@ -2119,6 +2240,8 @@ export default function MBGPage() {
   /* ===== Template CRUD ===== */
   const saveTemplate = async () => {
     if (!formTemplateName.trim()) { toast('Nama template wajib diisi!', 'error'); return }
+    const scheduleError = scheduleInputError(formTemplateScheduleType, formTemplateScheduleConfig)
+    if (scheduleError) { toast(scheduleError, 'error'); return }
     // BUG FIX: Capture form values BEFORE resetting to avoid fragile closure behavior
     const tplName = formTemplateName.trim()
     const tplDesc = formTemplateDesc || null
@@ -2214,19 +2337,21 @@ export default function MBGPage() {
         case 'r': case 'R': if (!e.ctrlKey && !e.metaKey) { e.preventDefault(); fetchData(true) }; break
         case 'Escape': closeAll(); break
         case 'f': case 'F': case '/': e.preventDefault(); document.getElementById('search-input')?.focus(); break
-        /* D shortcut: toggle Monitor */
+        /* D = Dashboard, M = Monitor.
+           Sebelumnya tombol D malah membuka Monitor (berlawanan dengan label
+           di toolbar dan halaman Bantuan), jadi shortcut-nya tidak bisa dipercaya. */
         case 'd': case 'D': if (!e.ctrlKey && !e.metaKey) {
           e.preventDefault()
-          setViewMode(prev => prev === 'monitor' ? 'tree' : 'monitor')
-          if (viewMode !== 'monitor') setActiveTab('all')
+          setBulkSelected(new Set()); setSelectMode(false); setViewMode('dashboard'); setActiveTab('all'); setDashFilterQuery('')
+        }; break
+        case 'm': case 'M': if (!e.ctrlKey && !e.metaKey) {
+          e.preventDefault()
+          setBulkSelected(new Set()); setSelectMode(false); setViewMode('monitor'); setActiveTab('all')
         }; break
         /* Fix #14: N to add task */
         case 'n': case 'N': if (!e.ctrlKey && !e.metaKey) {
           e.preventDefault()
-          // Open add task untuk project pertama yang expanded, atau standalone task
-          const firstExpanded = expandedProjects.size > 0 ? Array.from(expandedProjects)[0] : null
-          if (firstExpanded && firstExpanded !== '__no_project__') openAdd(firstExpanded)
-          else openAddStandalone()
+          openAdd(dashFilterProject && dashFilterProject !== '__no_project__' ? dashFilterProject : null)
         }; break
         /* T shortcut: add standalone task (tanpa project) */
         case 't': case 'T': if (!e.ctrlKey && !e.metaKey) {
@@ -2234,10 +2359,10 @@ export default function MBGPage() {
           openAddStandalone()
         }; break
         /* Feature 6: Number keys for filter tabs (switch to Dashboard view) */
-        case '1': if (!e.ctrlKey && !e.metaKey) { e.preventDefault(); setViewMode('dashboard'); setActiveTab('all'); setDashFilterQuery('') }; break
-        case '2': if (!e.ctrlKey && !e.metaKey) { e.preventDefault(); setViewMode('dashboard'); setActiveTab('siap'); setDashFilterQuery('') }; break
-        case '3': if (!e.ctrlKey && !e.metaKey) { e.preventDefault(); setViewMode('dashboard'); setActiveTab('cooldown'); setDashFilterQuery('') }; break
-        case '4': if (!e.ctrlKey && !e.metaKey) { e.preventDefault(); setViewMode('dashboard'); setActiveTab('selesai'); setDashFilterQuery('') }; break
+        case '1': if (!e.ctrlKey && !e.metaKey) { e.preventDefault(); setBulkSelected(new Set()); setSelectMode(false); setViewMode('dashboard'); setActiveTab('all'); setDashFilterQuery('') }; break
+        case '2': if (!e.ctrlKey && !e.metaKey) { e.preventDefault(); setBulkSelected(new Set()); setSelectMode(false); setViewMode('dashboard'); setActiveTab('siap'); setDashFilterQuery('') }; break
+        case '3': if (!e.ctrlKey && !e.metaKey) { e.preventDefault(); setBulkSelected(new Set()); setSelectMode(false); setViewMode('dashboard'); setActiveTab('cooldown'); setDashFilterQuery('') }; break
+        case '4': if (!e.ctrlKey && !e.metaKey) { e.preventDefault(); setBulkSelected(new Set()); setSelectMode(false); setViewMode('dashboard'); setActiveTab('selesai'); setDashFilterQuery('') }; break
 
         /* Feature 6: ? open help */
         case '?': e.preventDefault(); setDialogType('help'); break
@@ -2287,19 +2412,19 @@ export default function MBGPage() {
             onClick={e => { e.stopPropagation(); if (loading) return; if (done) reset(t.id); else complete(t.id) }} readOnly aria-label={done ? `Uncheck ${t.name}` : `Complete ${t.name}`} />
         ) : null}
         {/* Feature 1: Priority dot */}
-        <span className="priority-dot" style={{ background: PRIORITY_DOT[t.priority || 'medium'] || '#DAA520' }} title={PRIORITY_LABEL[t.priority || 'medium'] || 'Sedang'} />
+        <span className="priority-dot" style={{ background: priorityDot(t.priority) }} title={priorityLabel(t.priority)} />
         {t.pinned && <span className="task-pin">📌</span>}
         <span className="task-name" style={{ textDecoration: done ? 'line-through' : 'none', opacity: done ? 0.6 : 1 }} title={titleAttr}>
           {searchQuery ? <HL text={t.name} q={searchQuery} /> : t.name}
         </span>
-        <span className="task-schedule-info">{SCHEDULE_LABELS[t.scheduleType] || t.scheduleType}</span>
+        <span className="task-schedule-info">{scheduleLabel(t.scheduleType)}</span>
         {t.status === 'cooldown' && t.cooldownRemaining && (
           <span className="task-cd-timer" title={t.nextReadyAt ? `Siap: ${fmtTime(new Date(t.nextReadyAt))}` : ''}>
             {t.cooldownRemaining}
           </span>
         )}
         {done && <span className="task-schedule-info">✓</span>}
-        {t.link && (
+        {isSafeHttpUrl(t.link) && (
           <a
             className={`task-link-btn ${t.status === 'siap' && settings.autoCompleteLink ? 'auto-complete' : ''}`}
             href="#"
@@ -2327,6 +2452,20 @@ export default function MBGPage() {
   }
 
   /* ===== Fix #6: Pinned tasks sort first in status groups ===== */
+  /**
+   * Empty message yang kontekstual. Dulu semua kondisi kosong menampilkan
+   * "Tidak ditemukan" — padahal belum tentu user sedang mencari; bisa jadi
+   * hanya karena filter status tidak punya isi. Pesan yang salah bikin user
+   * mengira datanya hilang.
+   */
+  const emptyFilterText = () => {
+    if (debouncedSearch.trim()) return `Tidak ada tugas yang cocok dengan "${debouncedSearch.trim()}"`
+    if (activeTab === 'siap') return 'Belum ada tugas yang siap dikerjakan sekarang'
+    if (activeTab === 'cooldown') return 'Tidak ada tugas yang sedang menunggu'
+    if (activeTab === 'selesai') return 'Belum ada tugas yang selesai'
+    return 'Tidak ada tugas yang sesuai dengan pilihan ini'
+  }
+
   const renderStatusGroup = (title: string, list: Task[], key: string, color: string) => {
     if (activeTab !== 'all' && activeTab !== key) return null
     if (list.length === 0 && !debouncedSearch) return null
@@ -2399,7 +2538,7 @@ export default function MBGPage() {
             ) : filtered.length === 0 ? (
               <div className="empty-state" style={{ padding: '12px 16px 8px' }}>
                 <div className="icon" style={{ fontSize: 16 }}>🔍</div>
-                <div style={{ fontSize: 10 }}>Tidak ditemukan</div>
+                <div style={{ fontSize: 10 }}>{emptyFilterText()}</div>
               </div>
             ) : activeTab === 'all' ? (
               <>
@@ -2450,307 +2589,424 @@ export default function MBGPage() {
   const renderSchedCfg = (config: Record<string, unknown> = formScheduleConfig, setConfig: (k: string, v: unknown) => void = (k, v) => setFormScheduleConfig(p => ({ ...p, [k]: v })), schedType: string = formScheduleType) => {
     const uc = setConfig
     switch (schedType) {
-      case 'harian': return (<div className="schedule-config-area"><div className="win95-field"><label>Cooldown (jam)</label><input type="number" className="win95-input" value={Number(config.cooldownHours || 24)} min={1} max={168} onChange={e => uc('cooldownHours', +e.target.value)} /><div className="hint">Waktu tunggu setelah selesai</div></div></div>)
-      case 'mingguan': return (<div className="schedule-config-area"><div className="win95-field"><label>Hari</label><select className="win95-select" value={(config.dayOfWeek as number) ?? 0} onChange={e => uc('dayOfWeek', +e.target.value)}>{DAYS_ID.map((d, i) => <option key={i} value={i}>{d}</option>)}</select></div><div className="win95-field"><label>Cooldown (jam)</label><input type="number" className="win95-input" value={Number(config.cooldownHours || 24)} min={1} max={168} onChange={e => uc('cooldownHours', +e.target.value)} /></div></div>)
-      case 'jam_tertentu': return (<div className="schedule-config-area"><div className="win95-field"><label>Jam Eksekusi</label><input type="text" className="win95-input" placeholder="09:00, 15:00, 21:00" value={(config.times as string[])?.join(', ') || ''} onChange={e => uc('times', e.target.value.split(',').map(s => s.trim()).filter(Boolean))} /><div className="hint">Format: JJ:MM, pisahkan koma</div></div></div>)
-      case 'tanggal_spesifik': return (<div className="schedule-config-area"><div className="win95-field"><label>Tanggal Target</label><textarea className="win95-textarea" rows={2} placeholder="2026-05-01" value={(config.dates as string[])?.join('\n') || ''} onChange={e => uc('dates', e.target.value.split('\n').map(s => s.trim()).filter(Boolean))} /><div className="hint">Format: YYYY-MM-DD — task sekali, tanggal sebagai deadline</div></div></div>)
-      case 'kustom': return (<div className="schedule-config-area"><div className="win95-field"><label>Cooldown (jam)</label><input type="number" className="win95-input" value={Number(config.cooldownHours || 24)} min={1} max={8760} onChange={e => uc('cooldownHours', +e.target.value)} /></div></div>)
-      default: return (<div className="schedule-config-area"><div className="empty-state" style={{ padding: '4px' }}>Dijalankan sekali saja</div></div>)
+      case 'harian': return <div className="schedule-config-area"><div className="win95-field"><label>Jeda setelah selesai (jam)</label><input type="number" aria-label="Jeda setelah selesai (jam)" className="win95-input" value={config.cooldownHours === undefined ? 24 : Number(config.cooldownHours)} min={1} max={168} onChange={e => uc('cooldownHours', +e.target.value)} /><div className="hint">Contoh: selesai pukul 15.00 dengan jeda 24 jam → siap besok pukul 15.00. Bukan reset tengah malam.</div></div></div>
+      case 'mingguan': return <div className="schedule-config-area"><div className="win95-field"><label>Hari setiap minggu</label><select aria-label="Hari setiap minggu" className="win95-select" value={(config.dayOfWeek as number) ?? 0} onChange={e => uc('dayOfWeek', +e.target.value)}>{DAYS_ID.map((d, i) => <option key={i} value={i}>{d}</option>)}</select><div className="hint">Siap mulai pukul 00.00 pada hari yang dipilih dan tetap siap sampai dikerjakan. Maksimal sekali per minggu.</div></div></div>
+      case 'jam_tertentu': return <div className="schedule-config-area"><div className="win95-field"><label>Jam mulai siap setiap hari</label><input type="text" aria-label="Jam mulai siap setiap hari" className="win95-input" placeholder="09:00, 21:00" value={Array.isArray(config.times) ? (config.times as string[]).join(',') : ''} onChange={e => uc('times', e.target.value.split(','))} /><div className="hint">Format 24 jam, pisahkan dengan koma. Contoh 00:00 untuk reset setiap tengah malam. Setelah jam tersebut, tugas tetap siap sampai selesai.</div></div></div>
+      case 'tanggal_spesifik': return <div className="schedule-config-area"><div className="win95-field"><label>Mulai bisa dikerjakan pada tanggal</label><input type="date" aria-label="Mulai bisa dikerjakan pada tanggal" className="win95-input" value={Array.isArray(config.dates) ? String(config.dates[0] || '') : ''} onChange={e => uc('dates', e.target.value ? [e.target.value] : [])} /><div className="hint">Tugas satu kali, mulai siap pada 00.00 tanggal ini. Ini bukan batas akhir (deadline).</div></div></div>
+      case 'kustom': return <div className="schedule-config-area"><div className="win95-field"><label>Berapa jam setelah selesai?</label><input type="number" aria-label="Jeda setelah selesai (jam)" className="win95-input" value={config.cooldownHours === undefined ? 24 : Number(config.cooldownHours)} min={1} max={8760} onChange={e => uc('cooldownHours', +e.target.value)} /><div className="hint">Contoh: 24 jam berarti siap lagi 24 jam setelah Anda menekan Selesai.</div></div></div>
+      default: return <div className="schedule-config-area"><div className="hint">Dikerjakan sekali; setelah selesai tidak akan muncul lagi sebagai tugas aktif.</div></div>
     }
   }
 
-  /* ===== Render: Dashboard View (filter tabs + manual filters + task tree) ===== */
-  const renderDashboard = () => {
-    // Build filtered project list based on dashFilterProject
-    const filteredProjects = dashFilterProject
-      ? (dashFilterProject === '__no_project__' ? [] : projects.filter(p => p.id === dashFilterProject))
-      : sortedProjects
-    const showNoProj = !dashFilterProject || dashFilterProject === '__no_project__'
+  /* ===== Render: Daftar Task (v3 — sidebar project + baris dua tingkat) ===== */
+  /**
+   * Ditata ulang karena versi lama menyaring tiga kali berturut-turut (tab
+   * status → dropdown project → folder project → grup status di dalam folder).
+   * Sekarang: project ada di sidebar, tab status di atas, dan tiap task satu
+   * baris dengan aksi yang jelas. Logika filter tetap fungsi yang sama
+   * (`getActiveTasks`, `sortTasksByPriorityAndPin`) supaya perilaku data tidak
+   * berubah — hanya tampilannya.
+   */
+  const listPool = dashFilterProject
+    ? (dashFilterProject === '__no_project__' ? tasks.filter(t => !t.project) : tasks.filter(t => t.project?.id === dashFilterProject))
+    : tasks
 
-    // Filter tasks using dashFilterQuery (local search, separate from global)
-    const dashFilterTasks = (pt: Task[], projectName: string) => {
-      const base = activeTab === 'selesai' ? pt : getActiveTasks(pt)
-      return base.filter(t => {
-        if (activeTab !== 'all' && t.status !== activeTab) return false
-        if (dashFilterQuery.trim()) {
-          const q = dashFilterQuery.toLowerCase()
-          return t.name.toLowerCase().includes(q) || t.description?.toLowerCase().includes(q) || t.notes?.toLowerCase().includes(q) || projectName.toLowerCase().includes(q)
-        }
-        return true
-      })
-    }
+  const statusMatch = (t: Task) =>
+    activeTab === 'all' ? true : t.status === activeTab
 
-    // Badge counts respect project filter
-    const getFilteredTasks = (status: string) => {
-      const pool = dashFilterProject
-        ? (dashFilterProject === '__no_project__' ? tasks.filter(t => !t.project) : tasks.filter(t => t.project?.id === dashFilterProject))
-        : tasks
-      if (status === 'selesai') return getActiveTasks(pool).filter(t => t.status === 'selesai').length
-      return getActiveTasks(pool).filter(t => t.status === status).length
-    }
-    const badgeAll = dashFilterProject
-      ? getFilteredTasks('siap') + getFilteredTasks('cooldown') + getFilteredTasks('selesai')
-      : activeTasks.length
-    const badgeSiap = getFilteredTasks('siap')
-    const badgeCd = getFilteredTasks('cooldown')
-    const badgeDone = getFilteredTasks('selesai')
+  const searchMatch = (t: Task) => {
+    const q = debouncedSearch.trim().toLowerCase()
+    if (!q) return true
+    return (
+      t.name.toLowerCase().includes(q) ||
+      !!t.description?.toLowerCase().includes(q) ||
+      !!t.notes?.toLowerCase().includes(q) ||
+      !!t.project?.name.toLowerCase().includes(q)
+    )
+  }
 
-    // Count matches for the active filter
-    const totalCount = filteredProjects.reduce((sum, p) => sum + dashFilterTasks(tasks.filter(t => t.project?.id === p.id), p.name).length, 0)
-    const noProjCount = showNoProj ? dashFilterTasks(tasks.filter(t => !t.project), 'Tanpa Project').length : 0
-    const visibleCount = totalCount + noProjCount
+  const basePool = activeTab === 'selesai' ? listPool : getActiveTasks(listPool)
+  const visibleTasks = sortTasksByPriorityAndPin(basePool.filter(t => statusMatch(t) && searchMatch(t)))
+
+  const countIn = (status: 'siap' | 'cooldown' | 'selesai') =>
+    (status === 'selesai' ? listPool : getActiveTasks(listPool)).filter(t => t.status === status && searchMatch(t)).length
+
+  // Catatan: sengaja BUKAN useMemo — fungsi render ini dipanggil kondisional
+  // (bergantung viewMode), jadi memakai hook di dalamnya melanggar aturan hooks
+  // dan pernah membuat aplikasi berhenti di layar "Memuat data...".
+  const countAll = (dashFilterProject ? listPool : activeTasks).filter(t => searchMatch(t)).length
+
+  /** Satu baris task: nama + meta di kiri, status & aksi di kanan. */
+  const renderTaskRow = (t: Task) => {
+    const loading = completingIds.has(t.id)
+    const whenText =
+      t.status === 'siap' ? 'Siap' : t.status === 'cooldown' ? t.cooldownRemaining || '—' : 'Selesai'
+    const whenClass = t.status === 'siap' ? 'siap' : t.status === 'cooldown' ? 'cd' : 'done'
+
+    const titleParts: string[] = []
+    if (t.description) titleParts.push(t.description)
+    if (t.notes) titleParts.push(`Catatan: ${t.notes}`)
 
     return (
-      <div>
-        {/* Filter bar: status tabs + search + project dropdown — all in one row */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 2, padding: '4px 6px', background: '#d4d0c8', borderBottom: '1px solid #808080', flexWrap: 'wrap' }}>
-          <button className={`win95-toolbar-btn`} style={{ border: activeTab === 'all' ? '1px inset' : '1px solid transparent', fontSize: 11 }} onClick={() => { setActiveTab('all'); setDashFilterQuery('') }}>📋 Semua <span className="filter-count">({badgeAll})</span></button>
-          <button className={`win95-toolbar-btn`} style={{ border: activeTab === 'siap' ? '1px inset' : '1px solid transparent', fontSize: 11 }} onClick={() => { setActiveTab('siap'); setDashFilterQuery('') }}>✅ Siap <span className="filter-count" style={{ color: 'var(--win95-siap)' }}>({badgeSiap})</span></button>
-          <button className={`win95-toolbar-btn`} style={{ border: activeTab === 'cooldown' ? '1px inset' : '1px solid transparent', fontSize: 11 }} onClick={() => { setActiveTab('cooldown'); setDashFilterQuery('') }}>⏳ CD <span className="filter-count" style={{ color: 'var(--win95-cd)' }}>({badgeCd})</span></button>
-          <button className={`win95-toolbar-btn`} style={{ border: activeTab === 'selesai' ? '1px inset' : '1px solid transparent', fontSize: 11 }} onClick={() => { setActiveTab('selesai'); setDashFilterQuery('') }}>✔️ Done <span className="filter-count">({badgeDone})</span></button>
-          <input type="text" className="win95-input" placeholder="Cari task... (F)" value={dashFilterQuery} onChange={e => { setDashFilterQuery(e.target.value); setSearchQuery(e.target.value) }} id="search-input" style={{ flex: 1, minWidth: 'min(100px, 30vw)', fontSize: 11 }} />
-          <div className="win95-toolbar-sep" />
-          <select className="win95-select" value={dashFilterProject || ''} onChange={e => setDashFilterProject(e.target.value || null)} style={{ fontSize: 11, minWidth: 'min(130px, 35vw)' }}>
-            <option value="">📋 Semua Project</option>
-            {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-            {tasks.some(t => !t.project) && <option value="__no_project__">📎 Tanpa Project</option>}
-          </select>
-          {dashFilterProject && <button className="win95-btn" style={{ fontSize: 10, padding: '1px 6px' }} onClick={() => setDashFilterProject(null)}>✕</button>}
-          <span style={{ fontSize: 10, color: '#808080', userSelect: 'none' }}>{visibleCount} task</span>
-        </div>
-        {/* Task tree content */}
-        {projects.length === 0 && !tasks.some(t => !t.project) ? (
-          <div className="empty-state" style={{ padding: 40 }}>
-            <div className="icon">📂</div>
-            <div style={{ marginBottom: 8, fontWeight: 'bold' }}>Belum ada project</div>
-            <div>Buat project untuk mengelompokkan task, atau langsung buat task baru</div>
-            <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-              <button className="win95-btn primary" onClick={openAddProject}>📁 Buat Project</button>
-              <button className="win95-btn" onClick={openAddStandalone}>📌 Task Baru</button>
-            </div>
+      <div
+        key={t.id}
+        className={`v3-row ${selectedTaskId === t.id || (selectMode && bulkSelected.has(t.id)) ? 'selected' : ''}`}
+        data-status={t.status}
+        onClick={() => { if (selectMode && viewMode !== 'monitor') toggleBulk(t.id); else openDetail(t) }}
+        onContextMenu={e => handleCtx(e, t)}
+        onTouchStart={e => handleTouchStart(e, t)}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        onTouchCancel={handleTouchEnd}
+        title={titleParts.length ? titleParts.join('\n') : undefined}
+      >
+        <div className="v3-row-bar" />
+        {selectMode && viewMode !== 'monitor' && <input
+          type="checkbox"
+          className="v3-check"
+          checked={bulkSelected.has(t.id)}
+          onClick={e => e.stopPropagation()}
+          onChange={() => toggleBulk(t.id)}
+          aria-label={`Pilih ${t.name}`}
+          title="Pilih untuk aksi massal"
+        />}
+        <div className="v3-row-main">
+          <div className="v3-row-name">
+            {t.pinned && <span title="Disematkan">📌</span>}
+            <span style={{ background: priorityDot(t.priority), width: 8, height: 8, display: 'inline-block', border: '1px solid #606060', flex: '0 0 8px' }} title={priorityLabel(t.priority)} />
+            <button type="button" className="v3-task-name-button" aria-label={`${selectMode && viewMode !== 'monitor' ? 'Pilih' : 'Lihat detail'} ${t.name}`} onClick={e => { e.stopPropagation(); if (selectMode && viewMode !== 'monitor') toggleBulk(t.id); else openDetail(t) }}>
+              {searchQuery ? <HL text={t.name} q={searchQuery} /> : t.name}
+            </button>
           </div>
-        ) : (
-          <>
-            {/* Always show project folders even when they have 0 tasks */}
-            {filteredProjects.map(renderFolder)}
-            {/* Show "no tasks" message below folders if no tasks found */}
-            {visibleCount === 0 && !dashFilterQuery && filteredProjects.length > 0 && (
-              <div className="empty-state" style={{ padding: '8px 16px' }}>
-                <div style={{ fontSize: 10, color: '#808080' }}>📭 Tidak ada task {filterLabel} — klik + pada folder untuk menambahkan</div>
-              </div>
+          <div className="v3-row-meta">
+            {t.project ? (
+              <span className="v3-chip">
+                <span className="v3-chip-dot" style={{ background: t.project.color }} />
+                {t.project.name}
+              </span>
+            ) : (
+              <span className="v3-chip">📎 Tanpa proyek</span>
             )}
-            {/* Folder for tasks without project */}
-            {showNoProj && (() => {
-              const noProjTasks = tasks.filter(t => !t.project)
-              if (noProjTasks.length === 0) return null
-              const activeNoProjTasks = getActiveTasks(noProjTasks)
-              const fakeProject: Project = { id: '__no_project__', name: 'Tanpa Project', color: '#808080', _count: { tasks: activeNoProjTasks.length } }
-              const savedId = fakeProject.id
-              const savedExpanded = expandedProjects.has(savedId)
-              const pt = noProjTasks
-              const filtered = dashFilterTasks(pt, 'Tanpa Project')
-              const fSiap = filtered.filter(t => t.status === 'siap')
-              const fCd = filtered.filter(t => t.status === 'cooldown')
-              const fDone = filtered.filter(t => t.status === 'selesai')
-              if (dashFilterQuery.trim() && filtered.length === 0) return null
-              const shouldExpand = dashFilterQuery.trim() ? filtered.length > 0 : (savedExpanded || dashFilterQuery.trim())
-              return (
-                <div key="__no_project__" className="tree-folder">
-                  <div className="tree-folder-header">
-                    <span className={`tree-toggle ${shouldExpand ? '' : 'collapsed'}`} onClick={() => toggleFolder('__no_project__')}>
-                      {shouldExpand ? '📂' : '📁'}
-                    </span>
-                    <div className="tree-folder-color" style={{ background: '#808080', opacity: 0.5 }} />
-                    <span className="tree-folder-name" onClick={() => toggleFolder('__no_project__')} style={{ flex: 1, opacity: 0.7 }}>
-                      Tanpa Project
-                    </span>
-                    <span className="tree-stat tree-task-count">{activeNoProjTasks.length} task</span>
-                    <button className="tree-add-btn" onClick={() => openAdd('__no_project__')} title="Tambah Task">+</button>
-                  </div>
-                  {shouldExpand && (
-                    <div className="tree-folder-content">
-                      {filtered.length === 0 ? (
-                        <div className="empty-state" style={{ padding: '12px 16px 8px' }}>
-                          <div style={{ fontSize: 10 }}>Tidak ditemukan</div>
-                        </div>
-                      ) : activeTab === 'all' ? (
-                        <>
-                          {renderStatusGroup('✅ SIAP', fSiap, `siap-noproj`, 'var(--win95-siap)')}
-                          {renderStatusGroup('⏳ COOLDOWN', fCd, `cd-noproj`, 'var(--win95-cd)')}
-                          {renderStatusGroup('✔️ SELESAI', fDone, `done-noproj`, '#808080')}
-                        </>
-                      ) : (
-                        <div className="tree-status-content">
-                          {sortTasksByPriorityAndPin(filtered).map(renderRow)}
+            <span>{scheduleLabel(t.scheduleType)}</span>
+            {(t.logCount ?? 0) > 0 && <span title="Sudah diselesaikan">· {t.logCount}× selesai</span>}
+          </div>
+        </div>
+
+        <div className={`v3-row-when ${whenClass}`}>
+          {t.status === 'siap' ? 'Siap sekarang' : whenText}
+          {t.status === 'cooldown' && t.nextReadyAt && (
+            <small>Siap {fmtFull(new Date(t.nextReadyAt))}</small>
+          )}
+        </div>
+
+        <div className="v3-row-act" onClick={e => e.stopPropagation()}>
+          {t.status === 'siap' && (
+            <>
+              {isSafeHttpUrl(t.link) && <button className="v3-btn" onClick={e => { e.stopPropagation(); if (settings.autoCompleteLink) completeAndOpenLink(t); else window.open(t.link!, '_blank', 'noopener,noreferrer') }} title={settings.autoCompleteLink ? 'Buka link dan tandai selesai sesuai pengaturan' : 'Buka link tanpa menyelesaikan tugas'}>
+                {settings.autoCompleteLink ? 'Buka + selesai' : 'Buka link ↗'}
+              </button>}
+              <button
+                className="v3-btn v3-btn-primary"
+                disabled={loading}
+                title="Tandai selesai"
+                onClick={e => { e.stopPropagation(); complete(t.id) }}
+              >
+                {loading ? '⏳' : '✓'} Selesai
+              </button>
+            </>
+          )}
+          {isSafeHttpUrl(t.link) && t.status !== 'siap' && (
+            <a
+              className="v3-btn v3-btn-icon"
+              href="#"
+              title="Buka link"
+              style={{ textDecoration: 'none' }}
+              onClick={e => {
+                e.preventDefault()
+                e.stopPropagation()
+                window.open(t.link!, '_blank', 'noopener,noreferrer')
+              }}
+            >
+              🔗
+            </a>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  const renderDashboard = () => {
+    const totalList = activeTasks.length
+
+    return (
+      <div className="v3-shell">
+        {/* ── Sidebar: project ─────────────────────────────────────────── */}
+        {projects.length > 0 && <aside className="v3-side" aria-label="Daftar proyek">
+          <div className="v3-side-title">PROYEK</div>
+          <button
+            className={`v3-side-item ${dashFilterProject === null ? 'active' : ''}`}
+            onClick={() => { clearBulk(); setDashFilterProject(null); setDashFilterQuery('') }}
+          >
+            <span className="v3-side-name">📋 Semua proyek</span>
+            <span className="v3-side-count">{totalList}</span>
+          </button>
+
+          {sortedProjects.map(p => {
+            const cnt = getActiveTasks(tasks.filter(t => t.project?.id === p.id)).length
+            return (
+              <button
+                key={p.id}
+                className={`v3-side-item ${dashFilterProject === p.id ? 'active' : ''}`}
+                onClick={() => { clearBulk(); setDashFilterProject(p.id); setDashFilterQuery('') }}
+                title={`Tampilkan hanya ${p.name}`}
+              >
+                <span className="v3-side-swatch" style={{ background: p.color }} />
+                <span className="v3-side-name">{p.name}</span>
+                <span className="v3-side-count">{cnt}</span>
+              </button>
+            )
+          })}
+
+          {tasks.some(t => !t.project) && (
+            <button
+              className={`v3-side-item ${dashFilterProject === '__no_project__' ? 'active' : ''}`}
+              onClick={() => { clearBulk(); setDashFilterProject('__no_project__'); setDashFilterQuery('') }}
+            >
+              <span className="v3-side-swatch" style={{ background: '#808080' }} />
+              <span className="v3-side-name">Tanpa proyek</span>
+              <span className="v3-side-count">{getActiveTasks(tasks.filter(t => !t.project)).length}</span>
+            </button>
+          )}
+
+          <button className="v3-side-add" onClick={openAddProject} title="Buat project baru">+ Proyek baru</button>
+
+          <div className="v3-side-sep" />
+          <div className="v3-side-title">RINGKASAN</div>
+          <div className="v3-side-stat"><span>Bisa dikerjakan</span><b style={{ color: 'var(--win95-siap)' }}>{totalSiap}</b></div>
+          <div className="v3-side-stat"><span>Menunggu</span><b style={{ color: '#6b6b00' }}>{totalCd}</b></div>
+          <div className="v3-side-stat"><span>Selesai</span><b>{activeDone}</b></div>
+        </aside>}
+
+        {/* ── Area utama ──────────────────────────────────────────────── */}
+        <div className="v3-main">
+          {tasks.length > 0 && <div className="v3-filterbar">
+            <div className="v3-seg" role="group" aria-label="Filter status">
+              <button aria-pressed={activeTab === 'all'} onClick={() => { clearBulk(); setActiveTab('all') }}>
+                Semua <span className="v3-count">({countAll})</span>
+              </button>
+              <button aria-pressed={activeTab === 'siap'} onClick={() => { clearBulk(); setActiveTab('siap') }}>
+                ✓ Siap <span className="v3-count">({countIn('siap')})</span>
+              </button>
+              <button aria-pressed={activeTab === 'cooldown'} onClick={() => { clearBulk(); setActiveTab('cooldown') }}>
+                ⏳ Menunggu <span className="v3-count">({countIn('cooldown')})</span>
+              </button>
+              <button aria-pressed={activeTab === 'selesai'} onClick={() => { clearBulk(); setActiveTab('selesai') }}>
+                ✔ Selesai <span className="v3-count">({countIn('selesai')})</span>
+              </button>
+            </div>
+            <input
+              type="text"
+              className="v3-search"
+              aria-label="Cari tugas"
+              placeholder="Cari tugas… (F)"
+              value={dashFilterQuery}
+              onChange={e => { clearBulk(); setDashFilterQuery(e.target.value); setSearchQuery(e.target.value) }}
+              id="search-input"
+            />
+            <span className="v3-listinfo">{visibleTasks.length} tugas</span>
+          </div>}
+
+          {!selectMode && visibleTasks.length > 0 ? (
+            <div className="selection-entry">
+              <span>Klik tugas untuk melihat detail</span>
+              <button className="v3-btn" onClick={() => { clearBulk(); setSelectMode(true) }} disabled={visibleTasks.length === 0}>☑ Pilih beberapa</button>
+            </div>
+          ) : selectMode ? (
+            <div className="v3-bulkbar" role="region" aria-label="Tugas terpilih">
+              <b>{bulkSelected.size} dipilih</b>
+              <button className="v3-btn" onClick={() => setBulkSelected(new Set(visibleTasks.map(t => t.id)))} disabled={!visibleTasks.length || bulkBusy}>Pilih semua yang terlihat</button>
+              <button className="v3-btn v3-btn-primary" disabled={bulkBusy || !bulkSelected.size} onClick={bulkComplete}>✓ Selesaikan pilihan</button>
+              <button className="v3-btn" disabled={bulkBusy || !bulkSelected.size} onClick={bulkReset}>Hapus riwayat…</button>
+              <button className="v3-btn" onClick={exitSelectMode} disabled={bulkBusy}>Batal memilih</button>
+            </div>
+          ) : null}
+
+          {visibleTasks.length > 0 && <div className="v3-colhead">
+            {selectMode && <input
+              type="checkbox"
+              className="v3-check"
+              checked={visibleTasks.length > 0 && visibleTasks.every(t => bulkSelected.has(t.id))}
+              onChange={() => {
+                if (visibleTasks.length && visibleTasks.every(t => bulkSelected.has(t.id))) clearBulk()
+                else setBulkSelected(new Set(visibleTasks.map(t => t.id)))
+              }}
+              aria-label="Pilih semua tugas yang terlihat"
+            />}
+            <span className="v3-col-name">TUGAS</span>
+            <span className="v3-col-when">STATUS</span>
+            <span className="v3-col-act">AKSI</span>
+          </div>}
+
+          <div className="v3-list">
+            {tasks.length === 0 ? (
+              <div className="v3-empty">
+                <span className="v3-empty-icon">📋</span>
+                <div className="first-task-title">Mulai dengan tugas pertama</div>
+                <button className="v3-btn v3-btn-primary first-task-button" onClick={openAddStandalone}>+ Tambah tugas</button>
+              </div>
+            ) : visibleTasks.length === 0 ? (
+              <div className="v3-empty">
+                <span className="v3-empty-icon">📭</span>
+                <div>{activeTab === 'all' && !debouncedSearch.trim() && listPool.some(t => t.status === 'selesai') ? 'Tugas di sini sudah selesai. Lihat kembali di tab Selesai.' : emptyFilterText()}</div>
+                {activeTab === 'all' && !debouncedSearch.trim() && listPool.some(t => t.status === 'selesai') && (
+                  <button className="v3-btn" style={{ marginTop: 10 }} onClick={() => { clearBulk(); setActiveTab('selesai') }}>Lihat tugas selesai</button>
+                )}
+                {(dashFilterQuery || activeTab !== 'all' || dashFilterProject) && (
+                  <button className="v3-btn" style={{ marginTop: 10 }} onClick={() => { clearBulk(); setDashFilterQuery(''); setSearchQuery(''); setActiveTab('all'); setDashFilterProject(null) }}>
+                    Lihat semua tugas
+                  </button>
+                )}
+              </div>
+            ) : (
+              <>
+                {SECTIONS.map(sec => {
+                  const items = visibleTasks.filter(t => t.status === sec.status)
+                  const show = activeTab === sec.status || (activeTab === 'all' && items.length > 0)
+                  if (!show || items.length === 0) return null
+                  return (
+                    <div key={sec.status}>
+                      {activeTab === 'all' && (
+                        <div className="v3-grouphead" style={{ color: sec.color }}>
+                          {sec.icon} {sec.label} ({items.length})
                         </div>
                       )}
+                      {items.map(renderTaskRow)}
                     </div>
-                  )}
-                </div>
-              )
-            })()}
-          </>
-        )}
+                  )
+                })}
+              </>
+            )}
+            {tasks.length > 0 && <div className="v3-hint">Klik tugas untuk melihat detail</div>}
+          </div>
+        </div>
       </div>
     )
   }
 
   /* ===== Render: Monitor View ===== */
+  /**
+   * Monitor memakai `renderTaskRow` yang SAMA dengan daftar utama.
+   * Sebelumnya keduanya punya penanda dan tombol sendiri (ikon kecil vs tombol
+   * teks), sehingga satu perbaikan harus dikerjakan dua kali dan hasilnya bisa
+   * berbeda. Sekarang bedanya cuma isi: kartu ringkasan + daftar yang sudah
+   * difilter untukmu (siap sekarang / cooldown terdekat / terakhir selesai).
+   */
   const renderMonitor = () => {
-    // Stats: use activeDone for progress (excludes archived sekali), totalDone for stat card
-    // Ensure percentages don't exceed 100%
     const pctDone = activeTasks.length > 0 ? Math.min(100, Math.round((activeDone / activeTasks.length) * 100)) : 0
     const pctCd = activeTasks.length > 0 ? Math.min(100 - pctDone, Math.round((totalCd / activeTasks.length) * 100)) : 0
     const pctSiap = activeTasks.length > 0 ? Math.min(100 - pctDone - pctCd, Math.round((totalSiap / activeTasks.length) * 100)) : 0
 
-    // Ready now tasks (sorted by pinned first)
-    const readyTasks = sortTasksByPriorityAndPin(tasks.filter(t => t.status === 'siap'))
+    const readyNow = sortTasksByPriorityAndPin(activeTasks.filter(t => t.status === 'siap'))
+    const soon = activeTasks.filter(t => t.status === 'cooldown').sort((a, b) => a.cooldownMs - b.cooldownMs).slice(0, 10)
+    const recentDone = activeTasks
+      .filter(t => t.status === 'selesai' && t.lastCompletedAt)
+      .sort((a, b) => new Date(b.lastCompletedAt!).getTime() - new Date(a.lastCompletedAt!).getTime())
+      .slice(0, 8)
+    const projectProgress = sortedProjects
+      .map(p => {
+        const pt = tasks.filter(t => t.project?.id === p.id)
+        const act = getActiveTasks(pt)
+        return {
+          ...p,
+          total: act.length,
+          siap: act.filter(t => t.status === 'siap').length,
+          cd: act.filter(t => t.status === 'cooldown').length,
+          done: act.filter(t => t.status === 'selesai').length,
+        }
+      })
+      .filter(p => p.total > 0)
 
-    // Upcoming cooldowns (sorted by soonest)
-    const upcoming = tasks.filter(t => t.status === 'cooldown').sort((a, b) => a.cooldownMs - b.cooldownMs).slice(0, 10)
-
-    // Project progress — BUG-FIX: hanya tampilkan project yang punya task
-    const projectProgress = sortedProjects.map(p => {
-      const s = getProjectStats(p.id)
-      return { ...p, ...s, pct: s.total > 0 ? Math.round((s.done / s.total) * 100) : 0 }
-    }).filter(p => p.total > 0)
-
-    // Recently completed (tasks with lastCompletedAt, sorted newest first, exclude archived sekali)
-    const recentDone = activeTasks.filter(t => t.status === 'selesai' && t.lastCompletedAt).sort((a, b) =>
-      new Date(b.lastCompletedAt!).getTime() - new Date(a.lastCompletedAt!).getTime()
-    ).slice(0, 8)
+    const cards: { key: string; label: string; value: number; color: string; tab: 'all' | 'siap' | 'cooldown' | 'selesai'; hint: string }[] = [
+      { key: 'project', label: 'Project', value: projects.length, color: '#000080', tab: 'all', hint: 'Lihat semua task' },
+      { key: 'aktif', label: 'Task aktif', value: activeTasks.length, color: '#000', tab: 'all', hint: 'Lihat semua task' },
+      { key: 'siap', label: 'Siap dikerjakan', value: totalSiap, color: 'var(--win95-siap)', tab: 'siap', hint: 'Buka daftar siap' },
+      { key: 'cd', label: 'Menunggu', value: totalCd, color: '#6b6b00', tab: 'cooldown', hint: 'Buka daftar menunggu' },
+      { key: 'done', label: 'Selesai', value: activeDone, color: '#606060', tab: 'selesai', hint: 'Buka daftar selesai' },
+    ]
 
     return (
-      <div className="dashboard-view">
-        {/* Overview Cards */}
-        <fieldset className="win95-group">
-          <legend>📊 Ringkasan</legend>
-          <div className="dashboard-stats">
-            <div className="dash-stat-card">
-              <div className="dash-stat-num" style={{ color: 'var(--win95-title)' }}>{projects.length}</div>
-              <div className="dash-stat-label">Campaign</div>
-            </div>
-            <div className="dash-stat-card">
-              <div className="dash-stat-num">{activeTasks.length}</div>
-              <div className="dash-stat-label">Aktif</div>
-            </div>
-            <div className="dash-stat-card">
-              <div className="dash-stat-num" style={{ color: 'var(--win95-siap)' }}>{totalSiap}</div>
-              <div className="dash-stat-label">Siap Kerjakan</div>
-            </div>
-            <div className="dash-stat-card">
-              <div className="dash-stat-num" style={{ color: 'var(--win95-cd)' }}>{totalCd}</div>
-              <div className="dash-stat-label">Cooldown</div>
-            </div>
-            <div className="dash-stat-card">
-              <div className="dash-stat-num" style={{ color: '#808080' }}>{totalDone}</div>
-              <div className="dash-stat-label">Selesai</div>
-            </div>
+      <>
+        <div className="v3-cards">
+          {cards.map(c => (
+            <button
+              key={c.key}
+              className="v3-card"
+              onClick={() => { setViewMode('dashboard'); setActiveTab(c.tab); exitSelectMode(); setDashFilterProject(null); setDashFilterQuery(''); setSearchQuery('') }}
+              title={c.hint}
+            >
+              <span className="v3-card-value" style={{ color: c.color }}>{c.value}</span>
+              <span className="v3-card-label">{c.label}</span>
+            </button>
+          ))}
+        </div>
+
+        <div className="v3-progress">
+          <div className="v3-progress-bar">
+            <div style={{ left: 0, width: `${pctSiap}%`, background: 'var(--win95-siap)' }} />
+            <div style={{ left: `${pctSiap}%`, width: `${pctCd}%`, background: '#d4c34a' }} />
+            <div style={{ left: `${pctSiap + pctCd}%`, width: `${pctDone}%`, background: '#9a9a9a' }} />
           </div>
-        </fieldset>
-
-        {/* Progress Bar */}
-        <fieldset className="win95-group">
-          <legend>📈 Progress Keseluruhan</legend>
-          <div className="dash-progress-section">
-            <div className="dash-progress-bar-track">
-              <div className="dash-progress-fill-done" style={{ width: `${pctDone}%` }} />
-              <div className="dash-progress-fill-cd" style={{ width: `${pctCd}%`, left: `${pctDone}%` }} />
-              <div className="dash-progress-fill-siap" style={{ width: `${pctSiap}%`, left: `${pctDone + pctCd}%` }} />
-            </div>
-            <div className="dash-progress-legend">
-              <span style={{ color: 'var(--win95-siap)' }}>■ Siap {pctSiap}%</span>
-              <span style={{ color: 'var(--win95-cd)' }}>■ CD {pctCd}%</span>
-              <span style={{ color: '#808080' }}>■ Done {pctDone}%</span>
-            </div>
+          <div className="v3-progress-legend">
+            <span><i style={{ background: 'var(--win95-siap)' }} /> Siap {pctSiap}%</span>
+            <span><i style={{ background: '#d4c34a' }} /> Menunggu {pctCd}%</span>
+            <span><i style={{ background: '#9a9a9a' }} /> Selesai {pctDone}%</span>
           </div>
-        </fieldset>
+        </div>
 
-        {/* Ready Now */}
         <fieldset className="win95-group">
-          <legend>✅ Siap Dikerjakan ({readyTasks.length})</legend>
-          {readyTasks.length === 0 ? (
-            <div className="dashboard-empty">Tidak ada task yang siap. Semua sudah selesai atau cooldown.</div>
-          ) : (
-            <div className="dash-task-list">
-              {readyTasks.map(t => (
-                <div key={t.id} className="dash-task-item" onClick={() => openDetail(t)} onContextMenu={e => handleCtx(e, t)} onTouchStart={e => handleTouchStart(e, t)} onTouchMove={handleTouchMove} onTouchEnd={handleTouchEnd} onTouchCancel={handleTouchEnd}>
-                  <div className="dash-folder-dot" style={{ background: t.project?.color || '#808080' }} />
-                  <div style={{ width: 6, height: 6, borderRadius: '50%', background: PRIORITY_DOT[t.priority || 'medium'] || '#DAA520', flexShrink: 0 }} />
-                  <div className="dash-task-info">
-                    <div className="dash-task-name">{t.name}</div>
-                    <div className="dash-task-meta">{t.project?.name ? <>{t.project.name} &middot; </> : null}{SCHEDULE_LABELS[t.scheduleType]}</div>
-                  </div>
-                  <button className="dash-complete-btn" onClick={e => { e.stopPropagation(); startWorking(t) }} title="Kerjakan (10d)" style={{ color: '#DAA520' }}>🔨</button>
-                  <button className="dash-complete-btn" onClick={e => { e.stopPropagation(); complete(t.id) }} title="Selesai" disabled={completingIds.has(t.id)} style={{ opacity: completingIds.has(t.id) ? 0.5 : 1 }}>{completingIds.has(t.id) ? '⏳' : '✓'}</button>
-                </div>
-              ))}
-            </div>
-          )}
+          <legend>✅ Siap dikerjakan sekarang ({readyNow.length})</legend>
+          {readyNow.length === 0
+            ? <div className="v3-empty">Tidak ada task yang bisa dikerjakan sekarang. Semua masih menunggu atau sudah selesai.</div>
+            : <div className="v3-list" style={{ maxHeight: 'none' }}>{readyNow.map(renderTaskRow)}</div>}
         </fieldset>
 
-        {/* Upcoming Cooldowns */}
-        {upcoming.length > 0 && (
+        {soon.length > 0 && (
           <fieldset className="win95-group">
-            <legend>⏳ Cooldown Terdekat</legend>
-            <div className="dash-task-list">
-              {upcoming.map(t => (
-                <div key={t.id} className="dash-task-item" onClick={() => openDetail(t)} onContextMenu={e => handleCtx(e, t)} onTouchStart={e => handleTouchStart(e, t)} onTouchMove={handleTouchMove} onTouchEnd={handleTouchEnd} onTouchCancel={handleTouchEnd}>
-                  <div className="dash-folder-dot" style={{ background: t.project?.color || '#808080' }} />
-                  <div className="dash-task-info">
-                    <div className="dash-task-name">{t.name}</div>
-                    <div className="dash-task-meta">{t.project?.name}</div>
-                  </div>
-                  <span className="dash-cd-badge" style={{ color: t.cooldownMs < 300000 ? '#CC0000' : 'var(--win95-cd)' }}>
-                    {t.cooldownMs < 300000 ? '🔴' : '⏳'} {t.cooldownRemaining}
-                  </span>
-                </div>
-              ))}
+            <legend>⏳ Segera siap ({soon.length})</legend>
+            <div className="v3-list" style={{ maxHeight: 'none' }}>{soon.map(renderTaskRow)}</div>
+          </fieldset>
+        )}
+
+        {projectProgress.length > 0 && (
+          <fieldset className="win95-group">
+            <legend>📂 Status per project ({projectProgress.length})</legend>
+            <div style={{ padding: '4px 8px' }}>
+              {projectProgress.map(p => {
+                const s = p.total > 0 ? Math.round((p.siap / p.total) * 100) : 0
+                const c = p.total > 0 ? Math.round((p.cd / p.total) * 100) : 0
+                return (
+                  <button type="button" key={p.id} className="v3-projrow" onClick={() => { setViewMode('dashboard'); setActiveTab('all'); exitSelectMode(); setDashFilterProject(p.id); setDashFilterQuery(''); setSearchQuery('') }}>
+                    <span className="v3-side-swatch" style={{ background: p.color }} />
+                    <span className="v3-projrow-name">{p.name}</span>
+                    <span className="v3-progress-bar v3-progress-mini">
+                      <span style={{ width: `${s}%`, background: 'var(--win95-siap)', position: 'absolute', left: 0, top: 0, bottom: 0 }} />
+                      <span style={{ width: `${c}%`, background: '#d4c34a', position: 'absolute', left: `${s}%`, top: 0, bottom: 0 }} />
+                    </span>
+                    <span className="v3-projrow-meta">{p.siap} siap · {p.cd} menunggu · {p.done} selesai</span>
+                  </button>
+                )
+              })}
             </div>
           </fieldset>
         )}
 
-        {/* Per-Project Progress */}
-        <fieldset className="win95-group">
-          <legend>📂 Progress Per Campaign ({projectProgress.length})</legend>
-          <div className="dash-project-list">
-            {projectProgress.map(p => (
-              <div key={p.id} className="dash-project-row" onClick={() => { setExpandedProjects(prev => new Set(prev).add(p.id)); setActiveTab('all'); setViewMode('tree') }}>
-                <div className="dash-folder-dot" style={{ background: p.color }} />
-                <div className="dash-project-info" style={{ flex: 1 }}>
-                  <div className="dash-project-name">{p.name}</div>
-                  <div className="dash-progress-bar-track dash-progress-mini">
-                    <div className="dash-progress-fill-done" style={{ width: `${p.pct}%` }} />
-                  </div>
-                  <div className="dash-task-meta">{p.siap} siap &middot; {p.cd} cd &middot; {p.done} done</div>
-                </div>
-                <div className="dash-project-pct" style={{ color: p.pct === 100 ? 'var(--win95-siap)' : 'var(--win95-title)' }}>
-                  {p.pct}%
-                </div>
-              </div>
-            ))}
-          </div>
-        </fieldset>
-
-        {/* Recently Completed */}
         {recentDone.length > 0 && (
           <fieldset className="win95-group">
-            <legend>✔️ Terakhir Selesai</legend>
-            <div className="dash-task-list">
-              {recentDone.map(t => (
-                <div key={t.id} className="dash-task-item" style={{ opacity: 0.7 }} onClick={() => openDetail(t)} onContextMenu={e => handleCtx(e, t)} onTouchStart={e => handleTouchStart(e, t)} onTouchMove={handleTouchMove} onTouchEnd={handleTouchEnd} onTouchCancel={handleTouchEnd}>
-                  <div className="dash-folder-dot" style={{ background: t.project?.color || '#808080' }} />
-                  <div className="dash-task-info">
-                    <div className="dash-task-name">{t.name}</div>
-                    <div className="dash-task-meta">{t.project?.name ? <>{t.project.name} &middot; </> : null}{t.lastCompletedAt ? fmtDate(new Date(t.lastCompletedAt)) : ''}</div>
-                  </div>
-                  <span style={{ color: '#808080', fontSize: 10 }}>✓</span>
-                </div>
-              ))}
-            </div>
+            <legend>✔️ Terakhir selesai ({recentDone.length})</legend>
+            <div className="v3-list" style={{ maxHeight: 'none' }}>{recentDone.map(renderTaskRow)}</div>
           </fieldset>
         )}
-      </div>
+      </>
     )
   }
 
@@ -2790,8 +3046,20 @@ export default function MBGPage() {
             </form>
           ) : (
             <form onSubmit={handleRegister}>
-              <div className="win95-field"><label>Kode Undangan *</label><input type="text" className="win95-input" value={registerInviteCode} onChange={e => { setRegisterInviteCode(e.target.value.toUpperCase()); setAuthError('') }} placeholder="Masukkan kode undangan (8 karakter)" style={{ textTransform: 'uppercase', letterSpacing: 2, fontWeight: 'bold' }} autoFocus autoComplete="off" /></div>
-              <div className="win95-field"><label>Username *</label><input type="text" className="win95-input" value={registerUsername} onChange={e => { setRegisterUsername(e.target.value); setAuthError('') }} placeholder="Minimal 3 karakter (huruf/angka/_)" autoComplete="username" /></div>
+              {bootstrapMode && (
+                <div style={{ background: '#FFFFCC', border: '1px solid #808000', padding: '6px 8px', marginBottom: 10, fontSize: 11, lineHeight: 1.5 }}>
+                  <b>👋 Instalasi baru terdeteksi.</b><br />
+                  Belum ada akun di sistem ini. Akun pertama yang kamu buat otomatis menjadi <b>admin</b> dan tidak perlu kode undangan.
+                </div>
+              )}
+              {!bootstrapMode && (
+                <div className="win95-field">
+                  <label>Kode Undangan *</label>
+                  <input type="text" className="win95-input" value={registerInviteCode} onChange={e => { setRegisterInviteCode(e.target.value.toUpperCase()); setAuthError('') }} placeholder="Contoh: MBGUSER01" style={{ textTransform: 'uppercase', letterSpacing: 2, fontWeight: 'bold' }} autoFocus autoComplete="off" />
+                  <div className="hint">Belum punya kode? Minta ke admin yang mengundangmu.</div>
+                </div>
+              )}
+              <div className="win95-field"><label>Username *</label><input type="text" className="win95-input" value={registerUsername} onChange={e => { setRegisterUsername(e.target.value); setAuthError('') }} placeholder="Minimal 3 karakter (huruf/angka/_)" autoComplete="username" autoFocus={bootstrapMode} /></div>
               <div className="win95-field"><label>Nama Tampilan</label><input type="text" className="win95-input" value={registerDisplayName} onChange={e => setRegisterDisplayName(e.target.value)} placeholder="Opsional, nama yang ditampilkan" /></div>
               <div className="win95-field"><label>Password *</label><input type="password" className="win95-input" value={registerPassword} onChange={e => { setRegisterPassword(e.target.value); setAuthError('') }} placeholder="Minimal 6 karakter" autoComplete="new-password" onKeyDown={e => { if (e.key === 'Enter') handleRegister(e as unknown as React.FormEvent) }} /></div>
               <button className="win95-btn primary" type="submit" disabled={authLoading} style={{ width: '100%', marginTop: 4, fontSize: 12, padding: '4px 0' }}>{authLoading ? 'Memproses...' : 'Daftar'}</button>
@@ -2849,7 +3117,7 @@ export default function MBGPage() {
       {/* ===== GLOBAL LOADING BAR — thin animated bar at top of window ===== */}
       {globalLoading && <div className="global-loading-bar"><div className="global-loading-bar-fill" /></div>}
       {/* ===== MAIN WINDOW ===== */}
-      <div className="win95-window">
+      <div className="win95-window app-shell">
         {/* Title Bar */}
         <div className="win95-titlebar">
           <span className="win95-titlebar-text">MBG - Airdrop Task Manager</span>
@@ -2904,16 +3172,12 @@ export default function MBGPage() {
             Lihat
             {openMenu === 'view' && (
               <div className="win95-dropdown" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
-                <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); setViewMode('dashboard'); setActiveTab('all'); setDashFilterQuery(''); setDashFilterProject(null); setOpenMenu(null) }}>📋 Dashboard</div>
-                <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); setViewMode('monitor'); setActiveTab('all'); setOpenMenu(null) }}>📊 Monitor</div>
+                <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); exitSelectMode(); setViewMode('dashboard'); setActiveTab('all'); setDashFilterQuery(''); setDashFilterProject(null); setOpenMenu(null) }}>📋 Daftar tugas</div>
+                <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); exitSelectMode(); setViewMode('monitor'); setOpenMenu(null) }}>📊 Monitor</div>
                 <div className="win95-dropdown-sep" />
-                <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); setViewMode('tree'); setActiveTab('all'); setOpenMenu(null) }}>📂 Semua Task</div>
-                <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); setViewMode('tree'); setActiveTab('siap'); setOpenMenu(null) }}>✅ Siap Sekarang</div>
-                <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); setViewMode('tree'); setActiveTab('cooldown'); setOpenMenu(null) }}>⏳ Cooldown</div>
-                <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); setViewMode('tree'); setActiveTab('selesai'); setOpenMenu(null) }}>✔️ Selesai</div>
-                <div className="win95-dropdown-sep" />
-                <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); setViewMode('tree'); setExpandedProjects(new Set(projects.map(p => p.id))); setOpenMenu(null) }}>Expand Semua Folder</div>
-                <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); setViewMode('tree'); setExpandedProjects(new Set()); setOpenMenu(null) }}>Collapse Semua Folder</div>
+                <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); exitSelectMode(); setViewMode('dashboard'); setActiveTab('siap'); setOpenMenu(null) }}>✅ Siap sekarang</div>
+                <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); exitSelectMode(); setViewMode('dashboard'); setActiveTab('cooldown'); setOpenMenu(null) }}>⏳ Menunggu</div>
+                <div className="win95-dropdown-item" onClick={e => { e.stopPropagation(); exitSelectMode(); setViewMode('dashboard'); setActiveTab('selesai'); setOpenMenu(null) }}>✔️ Selesai</div>
               </div>
             )}
           </div>
@@ -2927,106 +3191,58 @@ export default function MBGPage() {
               </div>
             )}
           </div>
-          <div className="win95-menubar-item" onClick={e => { e.stopPropagation(); setDialogType('help'); setOpenMenu(null) }}>
+          <button type="button" className="win95-menubar-item menubar-help-button" onClick={e => { e.stopPropagation(); setDialogType('help'); setOpenMenu(null) }}>
             Bantuan
-          </div>
+          </button>
         </div>
 
-        {/* Toolbar: Actions */}
-        <div className="win95-toolbar" style={{ flexWrap: 'wrap', gap: 2 }}>
-          <button className={`win95-toolbar-btn`} style={{ border: viewMode === 'dashboard' ? '1px inset' : '1px solid transparent', background: viewMode === 'dashboard' ? '#d4d0c8' : undefined }} onClick={() => { setViewMode(viewMode === 'dashboard' ? 'tree' : 'dashboard'); if (viewMode !== 'dashboard') { setActiveTab('all'); setDashFilterQuery(''); setDashFilterProject(null) } }}>📋 <span>Dashboard</span></button>
-          <button className={`win95-toolbar-btn`} style={{ border: viewMode === 'monitor' ? '1px inset' : '1px solid transparent', background: viewMode === 'monitor' ? '#d4d0c8' : undefined }} onClick={() => { setViewMode(viewMode === 'monitor' ? 'tree' : 'monitor') }}>📊 <span>Monitor</span></button>
-          <div className="win95-toolbar-sep" />
-          <button className="win95-toolbar-btn" onClick={openAddProject} title="Buat Project Baru">📁 <span>Project Baru</span></button>
-          <button className="win95-toolbar-btn" onClick={openAddStandalone} title="Buat Task Baru (tanpa project)">📌 <span>Task Baru</span></button>
-          <button className="win95-toolbar-btn" onClick={() => fetchData(true)} title="Refresh (R)">🔄 <span>Refresh</span></button>
-          <div className="win95-toolbar-sep" />
-          <button className="win95-toolbar-btn" onClick={() => { setDialogType('templates'); fetchTemplates() }} title="Template Task">📋 <span>Template</span></button>
-          <button className="win95-toolbar-btn" onClick={() => setDialogType('telegram')} title="Telegram Notifikasi" style={telegramLinked ? { color: '#008000' } : { color: '#cc0000' }}>📱 <span>Telegram{telegramLinked ? '' : ''}</span></button>
-        </div>
-
-        {/* ===== MAIN CONTENT: Tree / Dashboard / Monitor ===== */}
-        <div className="win95-content">
-          {viewMode === 'dashboard' ? renderDashboard() : viewMode === 'monitor' ? renderMonitor() : projects.length === 0 ? (
-            <div className="empty-state" style={{ padding: 40 }}>
-              <div className="icon">📂</div>
-              <div style={{ marginBottom: 8, fontWeight: 'bold' }}>Belum ada project</div>
-              <div>Buat project untuk mengelompokkan task, atau langsung buat task baru</div>
-              <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-                <button className="win95-btn primary" onClick={openAddProject}>📁 Buat Project</button>
-                <button className="win95-btn" onClick={openAddStandalone}>📌 Task Baru</button>
-              </div>
-              <div style={{ marginTop: 8, fontSize: 10, color: '#808080' }}>
-                Contoh project: LayerZero, Grass, Polymarket, dll
-              </div>
+        {/* Toolbar: satu aksi utama (Task Baru) + tombol pendukung */}
+        <div className="win95-toolbar" style={{ flexWrap: 'wrap', gap: 3 }}>
+          <button
+            className="win95-toolbar-btn"
+            onClick={openAddStandalone}
+            title="Buat task baru (T)"
+            style={{ fontWeight: 'bold', color: '#005500', paddingLeft: 10, paddingRight: 10 }}
+          >
+            ＋ <span>Tugas Baru</span>
+          </button>
+          <button
+            className="win95-toolbar-btn"
+            aria-pressed={viewMode !== 'monitor'}
+            style={{ border: viewMode !== 'monitor' ? '1px inset' : '1px solid transparent', background: viewMode !== 'monitor' ? '#d4d0c8' : undefined }}
+            onClick={() => { exitSelectMode(); setViewMode('dashboard'); setDashFilterProject(null) }}
+            title="Daftar task (1-4)"
+          >
+            📋 <span>Daftar</span>
+          </button>
+          <button
+            className="win95-toolbar-btn"
+            aria-pressed={viewMode === 'monitor'}
+            style={{ border: viewMode === 'monitor' ? '1px inset' : '1px solid transparent', background: viewMode === 'monitor' ? '#d4d0c8' : undefined }}
+            onClick={() => { exitSelectMode(); setViewMode('monitor') }}
+            title="Monitor (M)"
+          >
+            📊 <span>Monitor</span>
+          </button>
+          <details className="toolbar-more">
+            <summary className="win95-toolbar-btn">Lainnya ▾</summary>
+            <div className="toolbar-more-menu">
+              <button onClick={e => { e.currentTarget.closest('details')!.open = false; openAddProject() }}>📁 Buat proyek</button>
+              <button onClick={e => { e.currentTarget.closest('details')!.open = false; fetchData(true) }}>🔄 Muat ulang</button>
+              <button onClick={e => { e.currentTarget.closest('details')!.open = false; setDialogType('templates'); fetchTemplates() }}>📋 Template</button>
+              <button onClick={e => { e.currentTarget.closest('details')!.open = false; setDialogType('telegram') }}>📱 Telegram</button>
             </div>
-          ) : (
-            <>
-              {sortedProjects.map(renderFolder)}
-              {/* Show hint when all folders are empty */}
-              {showEmptyState && (
-                <div className="empty-state" style={{ padding: '8px 16px' }}>
-                  <div style={{ fontSize: 10, color: '#808080' }}>📭 Tidak ada task {filterLabel} — klik + pada folder untuk menambahkan</div>
-                </div>
-              )}
-              {/* Folder for tasks without project */}
-              {(() => {
-                const noProjTasks = tasks.filter(t => !t.project)
-                if (noProjTasks.length === 0) return null
-                /* Fix B9: Use active count for stats (exclude archived sekali) */
-                const activeNoProjTasks = getActiveTasks(noProjTasks)
-                const fakeProject: Project = { id: '__no_project__', name: 'Tanpa Project', color: '#808080', _count: { tasks: activeNoProjTasks.length } }
-                const savedId = fakeProject.id
-                const savedExpanded = expandedProjects.has(savedId)
-                const pt = noProjTasks
-                const filtered = filterTasks(pt, 'Tanpa Project')
-                const fSiap = filtered.filter(t => t.status === 'siap')
-                const fCd = filtered.filter(t => t.status === 'cooldown')
-                const fDone = filtered.filter(t => t.status === 'selesai')
-                if (debouncedSearch.trim() && filtered.length === 0) return null
-                const shouldExpand = debouncedSearch.trim() ? filtered.length > 0 : (savedExpanded || debouncedSearch.trim())
-                return (
-                  <div key="__no_project__" className="tree-folder">
-                    <div className="tree-folder-header">
-                      <span className={`tree-toggle ${shouldExpand ? '' : 'collapsed'}`} onClick={() => toggleFolder('__no_project__')}>
-                        {shouldExpand ? '📂' : '📁'}
-                      </span>
-                      <div className="tree-folder-color" style={{ background: '#808080', opacity: 0.5 }} />
-                      <span className="tree-folder-name" onClick={() => toggleFolder('__no_project__')} style={{ flex: 1, opacity: 0.7 }}>
-                        Tanpa Project
-                      </span>
-                      <span className="tree-stat tree-task-count">{activeNoProjTasks.length} task</span>
-                      <button className="tree-add-btn" onClick={() => openAdd('__no_project__')} title="Tambah Task">+</button>
-                    </div>
-                    {shouldExpand && (
-                      <div className="tree-folder-content">
-                        {filtered.length === 0 ? (
-                          <div className="empty-state" style={{ padding: '12px 16px 8px' }}>
-                            <div style={{ fontSize: 10 }}>Tidak ditemukan</div>
-                          </div>
-                        ) : activeTab === 'all' ? (
-                          <>
-                            {renderStatusGroup('✅ SIAP', fSiap, `siap-noproj`, 'var(--win95-siap)')}
-                            {renderStatusGroup('⏳ COOLDOWN', fCd, `cd-noproj`, 'var(--win95-cd)')}
-                            {renderStatusGroup('✔️ SELESAI', fDone, `done-noproj`, '#808080')}
-                          </>
-                        ) : (
-                          <div className="tree-status-content">
-                            {sortTasksByPriorityAndPin(filtered).map(renderRow)}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )
-              })()}
-            </>
-          )}
+          </details>
+        </div>
+
+        {/* ===== MAIN CONTENT ===== */}
+        <div className="win95-content v3-content">
+          {viewMode === 'monitor' ? <div className="v3-monitor">{renderMonitor()}</div> : renderDashboard()}
         </div>
 
         {/* Status bar */}
         <div className="win95-statusbar">
-          <div className="win95-statusbar-section">{projects.length} folder, {activeTasks.length} aktif{totalArchived > 0 && <span style={{ color: '#808080' }}> (+{totalArchived} arsip)</span>}{searchQuery && <span style={{ color: '#000080' }}> | Cari...</span>}{globalLoading && <span className="syncing-indicator"> ⟳ sinkronisasi...</span>}</div>
+          <div className="win95-statusbar-section">{projects.length} proyek, {activeTasks.length} tugas aktif{totalArchived > 0 && <span style={{ color: '#808080' }}> (+{totalArchived} arsip)</span>}{searchQuery && <span style={{ color: '#000080' }}> | Cari...</span>}{globalLoading && <span className="syncing-indicator"> ⟳ sinkronisasi...</span>}</div>
           <span ref={clockRef} className="win95-statusbar-section fixed" title="Jam saat ini" data-fmt={settings.timeFormat || '24'} data-tz={userTzRef.current}>🕐 </span>
           {telegramLinked && <div className="win95-statusbar-section fixed" title="Telegram">📱</div>}
           <div className="win95-statusbar-section fixed">{settings.timezone || 'WIB'}</div>
@@ -3065,62 +3281,83 @@ export default function MBGPage() {
       {/* ===== ADD/EDIT TASK DIALOG ===== */}
       {(dialogType === 'add' || dialogType === 'edit') && (
         <div className="win95-dialog-overlay" role="presentation" onClick={() => setDialogType(null)}>
-          <div className="win95-dialog" role="dialog" aria-modal="true" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
+          <div className="win95-dialog task-form-dialog" role="dialog" aria-modal="true" aria-label={dialogType === 'add' ? 'Tambah tugas' : 'Edit tugas'} onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
             <div className="win95-titlebar">
-              <span className="win95-titlebar-text">{dialogType === 'add' ? `Tambah Task` : 'Edit Task'}</span>
+              <span className="win95-titlebar-text">{dialogType === 'add' ? 'Tambah tugas' : 'Edit tugas'}</span>
               <button className="win95-titlebar-btn" aria-label="Tutup" onClick={() => setDialogType(null)}>✕</button>
             </div>
             <div className="win95-dialog-body">
-              {/* Project indicator */}
+              <div className="win95-field"><label htmlFor="task-name">Apa yang ingin dikerjakan? *</label><input id="task-name" type="text" required className="win95-input" value={formName} onChange={e => { setFormName(e.target.value); setTaskFormError('') }} placeholder="Contoh: Klaim faucet" autoFocus /></div>
+              <div className="win95-field"><label htmlFor="task-schedule">Kapan tugas ini dikerjakan?</label>
+                <select id="task-schedule" className="win95-select" aria-label="Jadwal tugas" value={formScheduleType} onChange={e => {
+                  const type = e.target.value
+                  setFormScheduleType(type)
+                  setFormScheduleConfig(type === 'jam_tertentu' ? { times: ['00:00'] } : {})
+                  setTaskFormError('')
+                }}>
+                  <option value="sekali">Sekali saja</option>
+                  <option value="jam_tertentu">Setiap hari pada jam yang dipilih</option>
+                  <option value="mingguan">Setiap minggu pada hari yang dipilih</option>
+                  <option value="kustom">Berulang beberapa jam setelah selesai</option>
+                  <option value="tanggal_spesifik">Sekali, mulai pada tanggal tertentu</option>
+                  {formScheduleType === 'harian' && <option value="harian">Setelah jeda tertentu (jadwal lama)</option>}
+                </select>
+              </div>
+              {formScheduleType === 'jam_tertentu' ? (
+                <div className="schedule-config-area">
+                  <div className="win95-field">
+                    <label htmlFor="task-daily-time">Siap setiap hari pukul</label>
+                    <input id="task-daily-time" type="time" className="win95-input" value={Array.isArray(formScheduleConfig.times) ? String(formScheduleConfig.times[0] || '').trim() : ''} onChange={e => {
+                      const rest = Array.isArray(formScheduleConfig.times) ? formScheduleConfig.times.slice(1) : []
+                      setFormScheduleConfig(p => ({ ...p, times: [e.target.value, ...rest] })); setTaskFormError('')
+                    }} />
+                    <div className="hint">Contoh: 00:00 (12:00 AM) berarti siap setiap hari mulai tengah malam.</div>
+                  </div>
+                  <details className="schedule-more" open={Array.isArray(formScheduleConfig.times) && formScheduleConfig.times.length > 1 || undefined}>
+                    <summary>Butuh lebih dari satu jam per hari?</summary>
+                    <label htmlFor="task-daily-times">Semua jam, dipisahkan koma</label>
+                    <input id="task-daily-times" type="text" className="win95-input" value={Array.isArray(formScheduleConfig.times) ? (formScheduleConfig.times as string[]).join(',') : ''} onChange={e => { setFormScheduleConfig(p => ({ ...p, times: e.target.value.split(',') })); setTaskFormError('') }} placeholder="09:00, 21:00" />
+                    <div className="hint">Contoh: 09:00, 21:00. Tugas siap lagi pada jam berikutnya setelah diselesaikan.</div>
+                  </details>
+                </div>
+              ) : renderSchedCfg(formScheduleConfig, (k, v) => { setTaskFormError(''); setFormScheduleConfig(p => ({ ...p, [k]: v })) }, formScheduleType)}
+              {formScheduleType !== 'sekali' && <div className="schedule-timezone">Waktu mengikuti zona <b>{settings.timezone || 'WIB'}</b> di Pengaturan.</div>}
+              <div className="win95-field"><label htmlFor="task-link">Link untuk mengerjakan (opsional)</label><input id="task-link" type="url" className="win95-input" value={formLink} onChange={e => { setFormLink(e.target.value); setTaskFormError('') }} placeholder="https://..." /></div>
+              <details className="task-more" open={dialogType === 'edit' || undefined}>
+                <summary>Pengaturan tambahan</summary>
               <div className="win95-field">
-                <label>Project</label>
+                <label htmlFor="task-project">Proyek (opsional)</label>
                 {dialogType === 'add' && addDialogProject ? (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 8px', background: '#fff', border: '2px inset', fontSize: 11 }}>
-                    <span style={{ width: 12, height: 12, background: addDialogProject.color, display: 'inline-block', border: '1px solid rgba(0,0,0,0.3)' }} />
-                    <span>{addDialogProject.name}</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 8px', background: '#fff', border: '2px inset', fontSize: 12 }}>
+                    <span style={{ width: 12, height: 12, background: addDialogProject.color, display: 'inline-block', border: '1px solid rgba(0,0,0,0.3)' }} />{addDialogProject.name}
                   </div>
                 ) : (
-                  <select className="win95-select" value={formProjectId === '__no_project__' ? '' : (formProjectId || '')} onChange={e => setFormProjectId(e.target.value || null)}>
-                    <option value="">-- Tanpa Project --</option>
+                  <select id="task-project" className="win95-select" value={formProjectId === '__no_project__' ? '' : (formProjectId || '')} onChange={e => setFormProjectId(e.target.value || null)}>
+                    <option value="">Tanpa proyek</option>
                     {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                   </select>
                 )}
               </div>
-              <div className="win95-field"><label>Nama Task *</label><input type="text" className="win95-input" value={formName} onChange={e => setFormName(e.target.value)} placeholder="Contoh: Daily Claim" autoFocus onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); saveTask() } }} /></div>
-              <div className="win95-field"><label>Deskripsi</label><textarea className="win95-textarea" rows={2} value={formDesc} onChange={e => setFormDesc(e.target.value)} placeholder="Detail task..." /></div>
-              <div className="win95-field"><label>Link</label><input type="text" className="win95-input" value={formLink} onChange={e => setFormLink(e.target.value)} placeholder="https://..." /></div>
-              <div className="win95-field"><label>Jadwal</label>
-                <select className="win95-select" value={formScheduleType} onChange={e => { setFormScheduleType(e.target.value); setFormScheduleConfig({}) }}>
-                  {Object.entries(SCHEDULE_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-                </select>
-              </div>
-              {renderSchedCfg()}
-              {/* Feature 1: Priority selector */}
-              <div className="win95-field"><label>Prioritas</label>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: 3, cursor: 'pointer', fontSize: 11 }}>
-                    <input type="radio" name="priority" value="high" checked={formPriority === 'high'} onChange={() => setFormPriority('high')} style={{ accentColor: '#CC0000' }} /> 🔴 Tinggi
-                  </label>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: 3, cursor: 'pointer', fontSize: 11 }}>
-                    <input type="radio" name="priority" value="medium" checked={formPriority === 'medium'} onChange={() => setFormPriority('medium')} style={{ accentColor: '#DAA520' }} /> 🟡 Sedang
-                  </label>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: 3, cursor: 'pointer', fontSize: 11 }}>
-                    <input type="radio" name="priority" value="low" checked={formPriority === 'low'} onChange={() => setFormPriority('low')} style={{ accentColor: '#228B22' }} /> 🟢 Rendah
-                  </label>
-                </div>
-              </div>
-              {/* Feature 3: Load from template */}
+                <div className="win95-field"><label htmlFor="task-description">Deskripsi (opsional)</label><textarea id="task-description" className="win95-textarea" rows={2} value={formDesc} onChange={e => setFormDesc(e.target.value)} placeholder="Catatan tentang tugas ini…" /></div>
+                <fieldset className="task-priority"><legend>Prioritas</legend>
+                  <label><input type="radio" name="priority" value="high" checked={formPriority === 'high'} onChange={() => setFormPriority('high')} /> 🔴 Tinggi</label>
+                  <label><input type="radio" name="priority" value="medium" checked={formPriority === 'medium'} onChange={() => setFormPriority('medium')} /> 🟡 Sedang</label>
+                  <label><input type="radio" name="priority" value="low" checked={formPriority === 'low'} onChange={() => setFormPriority('low')} /> 🟢 Rendah</label>
+                </fieldset>
               {dialogType === 'add' && templates.length > 0 && (
-                <div className="win95-field"><label>📌 Dari Template</label>
-                  <select className="win95-select" value="" onChange={e => { if (e.target.value) { const tpl = templates.find(t => t.id === e.target.value); if (tpl) loadFromTemplate(tpl) } }} style={{ fontSize: 10 }}>
-                    <option value="">-- Pilih Template --</option>
-                    {templates.map(tpl => <option key={tpl.id} value={tpl.id}>{PRIORITY_LABEL[tpl.priority || 'medium']?.split(' ')[1] || ''} {tpl.name} ({SCHEDULE_LABELS[tpl.scheduleType] || tpl.scheduleType})</option>)}
+                <div className="win95-field"><label>Gunakan template (opsional)</label>
+                  <select aria-label="Gunakan template" className="win95-select" value="" onChange={e => { if (e.target.value) { const tpl = templates.find(t => t.id === e.target.value); if (tpl) loadFromTemplate(tpl) } }}>
+                    <option value="">Pilih template…</option>
+                    {templates.map(tpl => <option key={tpl.id} value={tpl.id}>{tpl.name} ({SCHEDULE_LABELS[tpl.scheduleType] || tpl.scheduleType})</option>)}
                   </select>
                 </div>
               )}
+              </details>
+
             </div>
+            {taskFormError && <div className="task-form-error" role="alert">⚠ {taskFormError}</div>}
             <div className="win95-dialog-footer">
-              <button className="win95-btn primary" disabled={!formName.trim() || savingTask} onClick={() => saveTask()} style={savingTask ? { opacity: 0.6, cursor: 'wait' } : {}}>{savingTask ? '⏳ Menyimpan...' : 'OK'}</button>
+              <button className="win95-btn primary" disabled={!formName.trim() || savingTask} onClick={() => saveTask()} style={savingTask ? { opacity: 0.6, cursor: 'wait' } : {}}>{savingTask ? '⏳ Menyimpan...' : dialogType === 'add' ? 'Tambah tugas' : 'Simpan perubahan'}</button>
               <button className="win95-btn" onClick={() => setDialogType(null)}>Batal</button>
               <div className="desktop-only-hint" style={{ flex: 1, fontSize: 9, color: '#808080', textAlign: 'right' }}>Ctrl+Enter untuk simpan</div>
             </div>
@@ -3136,7 +3373,7 @@ export default function MBGPage() {
           onReset={() => { if (detailRef.current) { reset(detailRef.current.id); setDialogType(null) } }}
           onDelete={() => { if (detailRef.current) { delTask(detailRef.current.id); setDialogType(null) } }}
           onTogglePin={() => { if (detailRef.current) { togglePin(detailRef.current); detailRef.current = { ...detailRef.current, pinned: !detailRef.current.pinned } } }}
-          onSaveNotes={saveNotes} scheduleLabels={SCHEDULE_LABELS} autoCompleteLink={settings.autoCompleteLink}
+          onSaveNotes={saveNotes} noteDraft={noteDraftsRef.current[detailRef.current.id]} scheduleLabels={SCHEDULE_LABELS} autoCompleteLink={settings.autoCompleteLink}
           fmtTime={fmtTime} fmtFull={fmtFull} />
       )}
 
@@ -3150,11 +3387,6 @@ export default function MBGPage() {
               <div className="win95-field"><label>Format Jam</label><select className="win95-select" value={formTimeFormat} onChange={e => setFormTimeFormat(e.target.value as '24' | '12')}><option value="24">24 Jam (14:30)</option><option value="12">12 Jam (02:30 PM)</option></select></div>
               <fieldset className="win95-group"><legend>Perilaku</legend>
                 <div style={{ padding: '6px 8px', fontSize: 11, lineHeight: 1.8 }}>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
-                    <input type="checkbox" className="task-checkbox" checked={formAutoExpandSiap} onChange={e => setFormAutoExpandSiap(e.target.checked)} />
-                    <span><b>Auto-buka folder</b> jika ada task siap</span>
-                  </label>
-                  <div style={{ fontSize: 10, color: '#808080', marginLeft: 20 }}>Folder campaign otomatis terbuka saat ada task yang siap dikerjakan</div>
                   <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', marginTop: 4 }}>
                     <input type="checkbox" className="task-checkbox" checked={formAutoCompleteLink} onChange={e => setFormAutoCompleteLink(e.target.checked)} />
                     <span><b>Auto-selesaikan</b> saat klik link</span>
@@ -3168,7 +3400,7 @@ export default function MBGPage() {
                     <input type="checkbox" className="task-checkbox" checked={formTelegramNotif} onChange={e => setFormTelegramNotif(e.target.checked)} />
                     <span><b>Telegram</b> notifikasi</span>
                   </label>
-                  <div style={{ fontSize: 10, color: '#808080', marginLeft: 20 }}>Kirim notif ke Telegram 2 menit sebelum & saat task siap</div>
+                  <div style={{ fontSize: 10, color: '#808080', marginLeft: 20 }}>Kirim notifikasi sesuai waktu yang diatur di bawah & saat tugas siap</div>
                   <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', marginTop: 4 }}>
                     <input type="checkbox" className="task-checkbox" checked={formBrowserNotif} onChange={e => { setFormBrowserNotif(e.target.checked); if (e.target.checked) requestNotifPermission() }} />
                     <span><b>🔔 Push Notifikasi</b> (seperti Discord)</span>
@@ -3206,11 +3438,11 @@ export default function MBGPage() {
                 </div>
               </fieldset>
               <fieldset className="win95-group"><legend>Info</legend><div style={{ padding: '6px 8px', fontSize: 11, lineHeight: 1.6 }}>
-                <div>{projects.length} project, {activeTasks.length} aktif (Siap: {totalSiap} | CD: {totalCd} | Done: {totalDone}){totalArchived > 0 && <span> | Arsip: {totalArchived}</span>}</div>
+                <div>{projects.length} project, {activeTasks.length} aktif (Siap: {totalSiap} | Cooldown: {totalCd} | Selesai: {totalDone}){totalArchived > 0 && <span> | Arsip: {totalArchived}</span>}</div>
                 <div>Telegram: {telegramLinked ? `Terhubung (${telegramName})` : 'Belum'}</div>
               </div></fieldset>
               <fieldset className="win95-group"><legend>Shortcuts</legend><div style={{ padding: '6px 8px', fontSize: 11, lineHeight: 1.6 }}>
-                <div><b>R</b> Refresh | <b>F</b> Cari | <b>N</b> Tambah | <b>D</b> Monitor | <b>Esc</b> Tutup</div>
+                <div><b>R</b> Refresh | <b>F</b> Cari | <b>N</b> Tambah task | <b>D</b> Dashboard | <b>M</b> Monitor | <b>Esc</b> Tutup</div>
                 <div><b>1-4</b> Tab Filter | <b>?</b> Bantuan | <b>Ctrl+Enter</b> Simpan task</div>
               </div></fieldset>
             </div>
@@ -3388,11 +3620,11 @@ export default function MBGPage() {
         <div ref={taskCtxRef} className="win95-context-menu" style={{ left: contextMenu.x, top: contextMenu.y, zIndex: 6000 }}>
           <div className="win95-context-item" onClick={() => { openDetail(contextMenu.task); setContextMenu(null) }}>📋 Detail</div>
           <div className="win95-context-item" onClick={() => { openEdit(contextMenu.task); setContextMenu(null) }}>✏️ Edit</div>
-          {contextMenu.task.status === 'siap' && <div className="win95-context-item" onClick={() => { startWorking(contextMenu.task); setContextMenu(null) }}>🔨 Kerjakan</div>}
+
           {contextMenu.task.status === 'siap' && <div className="win95-context-item" onClick={() => { complete(contextMenu.task.id); setContextMenu(null) }}>✅ Selesaikan</div>}
           {contextMenu.task.status !== 'siap' && contextMenu.task.scheduleType !== 'sekali' && contextMenu.task.scheduleType !== 'tanggal_spesifik' && <div className="win95-context-item" onClick={() => { reset(contextMenu.task.id); setContextMenu(null) }}>🔄 Reset</div>}
           <div className="win95-context-item" onClick={() => { togglePin(contextMenu.task); setContextMenu(null) }}>{contextMenu.task.pinned ? '📌 Unpin' : '📌 Pin'}</div>
-          {contextMenu.task.link && (
+          {isSafeHttpUrl(contextMenu.task.link) && (
             <div className="win95-context-item" onClick={() => {
               const t = contextMenu.task
               if (settings.autoCompleteLink && t.status === 'siap') {
@@ -3423,7 +3655,7 @@ export default function MBGPage() {
                 <>
                   <div style={{ marginBottom: 8 }}>Share project <b>"{shareProjectName}"</b> dengan teman?</div>
                   <div className="win95-field">
-                    <label>Task yang akan di-share: semua task di project ini</label>
+                    <label>Semua tugas di proyek ini dibagikan, termasuk link, deskripsi, dan catatan. Siapa pun yang memiliki kode dapat mengimpornya.</label>
                   </div>
                   <div className="win95-field">
                     <label style={{ fontSize: 10, color: '#666' }}>Teman bisa import project + task ini menggunakan kode share</label>
@@ -3556,7 +3788,7 @@ export default function MBGPage() {
                     <div style={{ maxHeight: 300, overflowY: 'auto' }}>
                       {templates.map(tpl => (
                         <div key={tpl.id} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 4px', borderBottom: '1px solid #e0e0e0', fontSize: 11 }}>
-                          <div style={{ width: 8, height: 8, borderRadius: '50%', background: PRIORITY_DOT[tpl.priority || 'medium'] || '#DAA520', flexShrink: 0 }} />
+                          <div style={{ width: 8, height: 8, borderRadius: '50%', background: priorityDot(tpl.priority), flexShrink: 0 }} />
                           <div style={{ flex: 1 }}>
                             <div style={{ fontWeight: 'bold' }}>{tpl.name}</div>
                             <div style={{ fontSize: 10, color: '#808080' }}>{SCHEDULE_LABELS[tpl.scheduleType] || tpl.scheduleType}{tpl.link ? ' · 🔗' : ''}</div>
@@ -3621,114 +3853,30 @@ export default function MBGPage() {
         </div>
       )}
 
-      {/* ===== HELP DIALOG ===== */}
+      {/* ===== PANDUAN SINGKAT ===== */}
       {dialogType === 'help' && (
         <div className="win95-dialog-overlay" role="presentation" onClick={() => setDialogType(null)}>
-          <div className="win95-dialog help-dialog" role="dialog" aria-modal="true" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
-            <div className="win95-titlebar"><span className="win95-titlebar-text">📖 Petunjuk Penggunaan</span><button className="win95-titlebar-btn" aria-label="Tutup" onClick={() => setDialogType(null)}>✕</button></div>
-            <div className="win95-dialog-body help-body">
-              <div className="help-section">
-                <div className="help-section-title">📁 Project / Campaign</div>
-                <div className="help-item"><span className="help-key">File → Buat Project Baru</span> Membuat folder campaign baru (contoh: LayerZero, Grass)</div>
-                <div className="help-item"><span className="help-key">Klik kanan folder</span> Buka context menu: Tambah Task, Complete Semua, Edit, Hapus</div>
-                <div className="help-item"><span className="help-key">Klik ikon folder</span> Buka/tutup folder untuk melihat task di dalamnya</div>
-              </div>
-
-              <div className="help-section">
-                <div className="help-section-title">✅ Task</div>
-                <div className="help-item"><span className="help-key">📌 Task Baru</span> Buat task langsung tanpa project (toolbar / File menu / shortcut T)</div>
-                <div className="help-item"><span className="help-key">Tombol [+] di folder</span> Tambah task baru ke campaign tersebut</div>
-                <div className="help-item"><span className="help-key">Checkbox ☑</span> Klik untuk selesaikan/reset task</div>
-                <div className="help-item"><span className="help-key">Klik task</span> Buka detail task (catatan, info lengkap)</div>
-                <div className="help-item"><span className="help-key">Klik kanan task</span> Context menu: Kerjakan, Edit, Duplikat, Pin, Pindah, Hapus</div>
-                <div className="help-item"><span className="help-key">Tombol 🔨 Kerjakan</span> Buka link + timer 10 detik, otomatis selesai. Bisa batalkan/undo</div>
-                <div className="help-item"><span className="help-key">Ikon 🔗</span> Buka link task. Jika auto-selesaikan aktif, otomatis ditandai selesai</div>
-              </div>
-
-              <div className="help-section">
-                <div className="help-section-title">⏰ Jadwal & Cooldown</div>
-                <div className="help-item"><span className="help-key">Sekali</span> Dijalankan satu kali saja</div>
-                <div className="help-item"><span className="help-key">Harian</span> Selesai → cooldown → siap lagi besok (sesuai jam cooldown)</div>
-                <div className="help-item"><span className="help-key">Mingguan</span> Siap di hari tertentu setiap minggu</div>
-                <div className="help-item"><span className="help-key">Jam Tertentu</span> Siap di jam-jam yang ditentukan (09:00, 15:00, dll)</div>
-                <div className="help-item"><span className="help-key">Tgl Spesifik</span> Siap di tanggal tertentu</div>
-                <div className="help-item"><span className="help-key">Kustom</span> Cooldown manual (bebas atur jam)</div>
-              </div>
-
-              <div className="help-section">
-                <div className="help-section-title">🔴 Prioritas Task</div>
-                <div className="help-item">Setiap task punya prioritas: Tinggi (🔴), Sedang (🟡), Rendah (🟢)</div>
-                <div className="help-item">Task diprioritaskan otomatis berdasarkan tinggi → sedang → rendah</div>
-                <div className="help-item"><span className="help-key">Tombol bulat</span> di task menunjukkan warna prioritas</div>
-              </div>
-
-              <div className="help-section">
-                <div className="help-section-title">📋 Dashboard</div>
-                <div className="help-item"><span className="help-key">Lihat → Dashboard</span> Atau klik tombol 📋 di toolbar / tekan 1-4</div>
-                <div className="help-item">View dengan filter tabs untuk memfilter task: Semua, Siap, CD, Done</div>
-                <div className="help-item">Task tree ditampilkan sesuai filter yang aktif</div>
-              </div>
-
-              <div className="help-section">
-                <div className="help-section-title">📊 Monitor</div>
-                <div className="help-item"><span className="help-key">Lihat → Monitor</span> Atau klik tombol 📊 di toolbar / tekan D</div>
-                <div className="help-item">Melihat ringkasan: total campaign, task siap, cooldown, progress per campaign</div>
-                <div className="help-item">Klik campaign di monitor untuk langsung buka folder-nya</div>
-              </div>
-
-              <div className="help-section">
-                <div className="help-section-title">⚙️ Pengaturan</div>
-                <div className="help-item"><span className="help-key">Alat → Pengaturan</span> Atur timezone, perilaku auto-expand, auto-selesaikan link</div>
-                <div className="help-item"><span className="help-key">Auto-buka folder</span> Folder otomatis terbuka kalau ada task siap</div>
-                <div className="help-item"><span className="help-key">Auto-selesaikan</span> Task otomatis selesai saat link diklik</div>
-              </div>
-
-              <div className="help-section">
-                <div className="help-section-title">⌨️ Shortcut Keyboard</div>
-                <div className="help-item"><span className="help-key">R</span> Refresh data</div>
-                <div className="help-item"><span className="help-key">F / /</span> Fokus ke kolom pencarian</div>
-                <div className="help-item"><span className="help-key">D</span> Toggle Monitor</div>
-                <div className="help-item"><span className="help-key">N</span> Tambah task baru (ke folder yang expanded, atau standalone)</div>
-                <div className="help-item"><span className="help-key">T</span> Tambah task baru tanpa project</div>
-
-                <div className="help-item"><span className="help-key">1/2/3/4</span> Dashboard filter (Semua/Siap/CD/Done)</div>
-                <div className="help-item"><span className="help-key">?</span> Buka dialog bantuan</div>
-                <div className="help-item"><span className="help-key">Ctrl+Enter</span> Simpan task (di dialog tambah/edit)</div>
-                <div className="help-item"><span className="help-key">Esc</span> Tutup dialog/menu</div>
-              </div>
-
-              <div className="help-section">
-                <div className="help-section-title">🔔 Notifikasi Cooldown</div>
-                <div className="help-item">Atur di Pengaturan: berapa menit sebelum cooldown selesai, notifikasi muncul</div>
-                <div className="help-item">Mendukung notifikasi browser/Windows dan suara beep</div>
-                <div className="help-item">Default: 5 menit sebelum task siap</div>
-              </div>
-
-              <div className="help-section">
-                <div className="help-section-title">📋 Template Task</div>
-                <div className="help-item">Simpan task yang sering digunakan sebagai template</div>
-                <div className="help-item"><span className="help-key">Alat → Template Task</span> Kelola template</div>
-                <div className="help-item"><span className="help-key">📌 Dari Template</span> Muat template saat tambah task baru</div>
-              </div>
-
-              <div className="help-section">
-                <div className="help-section-title">📱 Telegram</div>
-                <div className="help-item">Hubungkan akun MBG ke Telegram untuk notifikasi.</div>
-                <div className="help-item"><span className="help-key">Alat → Telegram → Generate Kode</span> Buat kode koneksi</div>
-                <div className="help-item"><span className="help-key">/start &lt;kode&gt;</span> Kirim kode ke bot Telegram</div>
-              </div>
-
-              <div className="help-section">
-                <div className="help-section-title">💡 Tips</div>
-                <div className="help-item">📌 Pin task penting agar selalu tampil di atas</div>
-                <div className="help-item">🔧 Klik kanan folder → Complete Semua Siap untuk batch complete</div>
-                <div className="help-item">📦 Pindahkan task antar campaign via context menu</div>
-                <div className="help-item">📄 Duplikat task untuk membuat task serupa dengan cepat</div>
-                <div className="help-item">💾 Export/Import backup data di menu File</div>
-
-              </div>
+          <div className="win95-dialog help-dialog" role="dialog" aria-modal="true" aria-label="Panduan penggunaan" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
+            <div className="win95-titlebar"><span className="win95-titlebar-text">📖 Panduan singkat</span><button className="win95-titlebar-btn" aria-label="Tutup" onClick={() => setDialogType(null)}>✕</button></div>
+            <div className="win95-dialog-body help-body simple-help">
+              <h2>Mulai dari sini</h2>
+              <ol>
+                <li><b>Tambah tugas.</b> Tekan <b>+ Tugas Baru</b>, isi nama dan pilih kapan dikerjakan. Proyek dan link tidak wajib.</li>
+                <li><b>Kerjakan tugas yang siap.</b> Tekan <b>Buka link</b> jika ada, lalu kembali ke sini dan tekan <b>Selesai</b> setelah selesai.</li>
+                <li><b>Lihat kapan siap lagi.</b> Tugas berulang pindah ke <b>Menunggu</b>. Tugas satu kali ada di tab <b>Selesai</b>.</li>
+              </ol>
+              <p>Jika pengaturan <b>otomatis selesaikan saat membuka link</b> diaktifkan, tombol akan bertuliskan <b>Buka + selesai</b>.</p>
+              <details>
+                <summary>Memilih jadwal</summary>
+                <ul><li><b>Sekali saja:</b> tidak berulang.</li><li><b>Setiap hari:</b> jam tetap, misalnya 00:00 setiap hari.</li><li><b>Beberapa jam setelah selesai:</b> misalnya 24 jam setelah Anda menekan Selesai, bukan selalu tengah malam.</li><li><b>Setiap minggu:</b> pilih hari.</li><li><b>Mulai tanggal tertentu:</b> tugas sekali yang siap sejak tanggal itu; bukan batas akhir.</li></ul>
+              </details>
+              <details>
+                <summary>Memilih beberapa tugas dan membatalkan</summary>
+                <p>Tekan <b>Pilih beberapa</b>, pilih tugas, lalu <b>Selesaikan pilihan</b>. Jika salah menandai selesai, tekan <b>Undo</b> di pemberitahuan yang muncul. Menghapus riwayat adalah aksi berbeda dan tidak dapat dibatalkan.</p>
+              </details>
+              <p className="simple-help-note">Buka panduan ini lagi melalui menu <b>Bantuan</b>.</p>
             </div>
-            <div className="win95-dialog-footer"><button className="win95-btn primary" onClick={() => setDialogType(null)}>OK</button></div>
+            <div className="win95-dialog-footer"><button className="win95-btn" onClick={() => setDialogType(null)}>Tutup</button><button className="win95-btn primary" onClick={() => { setDialogType(null); openAddStandalone() }}>+ Buat tugas</button></div>
           </div>
         </div>
       )}
@@ -3933,7 +4081,20 @@ export default function MBGPage() {
       <div className="toast-container" role="status" aria-live="polite">{toasts.map((t) => {
         const icon = t.type === 'success' ? '✅' : t.type === 'error' ? '❌' : '💡'
         const cls = t.type === 'success' ? 'win95-toast-success' : t.type === 'error' ? 'win95-toast-error' : 'win95-toast-info'
-        return <div key={t.id} className={`win95-toast ${cls}`}>{icon} {t.msg}</div>
+        return (
+          <div key={t.id} className={`win95-toast ${cls}`}>
+            <span className="win95-toast-msg">{icon} {t.msg}</span>
+            {t.actionLabel && t.onAction && (
+              <button
+                className="win95-toast-action"
+                onClick={() => { t.onAction!(); dismissToast(t.id) }}
+              >
+                ↩ {t.actionLabel}
+              </button>
+            )}
+            <button className="win95-toast-close" aria-label="Tutup notifikasi" onClick={() => dismissToast(t.id)}>✕</button>
+          </div>
+        )
       })}</div>
     </div>
   )
@@ -3948,59 +4109,126 @@ function HL({ text, q }: { text: string; q: string }) {
 }
 
 /* ===== Detail Dialog ===== */
-function DetailDialog({ task, onClose, onEdit, onComplete, onReset, onDelete, onTogglePin, onSaveNotes, scheduleLabels, autoCompleteLink, fmtTime, fmtFull }: {
+function DetailDialog({ task, onClose, onEdit, onComplete, onReset, onDelete, onTogglePin, onSaveNotes, noteDraft, scheduleLabels, autoCompleteLink, fmtTime, fmtFull }: {
   task: Task; onClose: () => void; onEdit: () => void; onComplete: () => void; onReset: () => void
-  onDelete: () => void; onTogglePin: () => void; onSaveNotes: (id: string, notes: string) => void; scheduleLabels: Record<string, string>
+  onDelete: () => void; onTogglePin: () => void; onSaveNotes: (id: string, notes: string) => void; noteDraft?: string; scheduleLabels: Record<string, string>
   autoCompleteLink?: boolean; fmtTime: (d: Date) => string; fmtFull: (d: Date) => string
 }) {
-  const [notes, setNotes] = useState(task.notes || '')
+  const [notes, setNotes] = useState(noteDraft ?? task.notes ?? '')
   const isFocusedRef = useRef(false)
   // Sync notes state jika task.notes berubah dari luar (misal fetchData refresh)
   // Skip sync when user is actively typing (textarea focused) to prevent overwriting
-  useEffect(() => { if (!isFocusedRef.current) setNotes(task.notes || '') }, [task.notes]) // eslint-disable-line react-hooks/set-state-in-effect
+  useEffect(() => { if (!isFocusedRef.current) setNotes(noteDraft ?? task.notes ?? '') }, [task.notes]) // eslint-disable-line react-hooks/set-state-in-effect
   const [saved, setSaved] = useState('')
   const blur = () => { if (notes !== (task.notes || '')) { onSaveNotes(task.id, notes); setSaved(fmtTime(new Date())) } }
-  const sc = task.status === 'siap' ? 'var(--win95-siap)' : task.status === 'cooldown' ? 'var(--win95-cd)' : 'var(--win95-done)'
-  const sl = task.status === 'siap' ? '✅ Siap Sekarang' : task.status === 'cooldown' ? '⏳ Cooldown' : '✔️ Selesai'
+
+  const statusText = task.status === 'siap' ? 'Siap sekarang' : task.status === 'cooldown' ? `Menunggu ${task.cooldownRemaining}` : 'Selesai'
+  const isReady = task.status === 'siap'
+  const canReset = task.status !== 'siap' && task.scheduleType !== 'sekali' && task.scheduleType !== 'tanggal_spesifik'
+
+  const rows: { label: string; value: React.ReactNode }[] = []
+  rows.push({
+    label: 'Project',
+    value: task.project ? (
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+        <span style={{ width: 9, height: 9, background: task.project.color, border: '1px solid rgba(0,0,0,0.35)', display: 'inline-block' }} />
+        {task.project.name}
+      </span>
+    ) : <span style={{ color: '#606060' }}>Tanpa proyek</span>,
+  })
+  rows.push({ label: 'Jadwal', value: scheduleLabels[task.scheduleType] || task.scheduleType })
+  if (task.status === 'cooldown' && task.nextReadyAt) {
+    rows.push({
+      label: 'Siap pada',
+      value: <b style={{ color: cooldownColor(task.cooldownMs) }}>{fmtFull(new Date(task.nextReadyAt))} · {task.cooldownRemaining} lagi</b>,
+    })
+  }
+  if (task.scheduleType === 'tanggal_spesifik' && task.nextReadyAt && task.status !== 'selesai') {
+    rows.push({ label: 'Tanggal target', value: <b style={{ color: 'var(--win95-siap)' }}>{fmtFull(new Date(task.nextReadyAt))}</b> })
+  }
+  if (task.lastCompletedAt) rows.push({ label: 'Terakhir selesai', value: fmtFull(new Date(task.lastCompletedAt)) })
+  if ((task.logCount ?? 0) > 0) rows.push({ label: 'Sudah diselesaikan', value: `${task.logCount}×` })
+  if (task.link) {
+    rows.push({
+      label: 'Link',
+      value: (
+        isSafeHttpUrl(task.link) ? <a href={task.link} target="_blank" rel="noopener noreferrer" style={{ color: '#000080' }} onClick={e => e.stopPropagation()}>
+          {task.link.length > 42 ? task.link.slice(0, 42) + '…' : task.link}
+        </a> : <span>Link tidak valid — edit tugas untuk memperbaiki</span>
+      ),
+    })
+  }
+  rows.push({
+    label: 'Dibuat',
+    value: task.createdAt && !isNaN(new Date(task.createdAt).getTime()) ? fmtFull(new Date(task.createdAt)) : '—',
+  })
 
   return (
     <div className="win95-dialog-overlay" role="presentation" onClick={onClose}>
-      <div className="win95-dialog" role="dialog" aria-modal="true" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()} style={{ maxWidth: 'min(420px, 95vw)' }}>
-        <div className="win95-titlebar"><span className="win95-titlebar-text">📋 {task.name}</span><button className="win95-titlebar-btn" aria-label="Tutup" onClick={onClose}>✕</button></div>
-        <div className="win95-dialog-body">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-            <span style={{ fontWeight: 'bold', color: sc, fontSize: 12 }}>{sl}</span>
-            {task.pinned && <span style={{ fontSize: 10 }}>📌</span>}
-          </div>
-          <fieldset className="win95-group"><legend>Info</legend>
-            <div style={{ padding: '4px 8px', fontSize: 11, lineHeight: 1.8 }}>
-              {task.project && <div style={{ display: 'flex', gap: 6 }}><span style={{ color: '#808080', minWidth: 60 }}>Project:</span><span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 8, height: 8, background: task.project.color, border: '1px solid rgba(0,0,0,0.3)', display: 'inline-block' }} />{task.project.name}</span></div>}
-              <div style={{ display: 'flex', gap: 6 }}><span style={{ color: '#808080', minWidth: 60 }}>Jadwal:</span><span>{scheduleLabels[task.scheduleType]}</span></div>
-              {task.status === 'cooldown' && task.cooldownRemaining && <div style={{ display: 'flex', gap: 6 }}><span style={{ color: '#808080', minWidth: 60 }}>Cooldown:</span><span style={{ color: 'var(--win95-cd)', fontWeight: 'bold' }}>{task.cooldownMs < 300000 ? '🔴 ' : '⏳ '}{task.cooldownRemaining}{task.nextReadyAt && <span style={{ fontWeight: 'normal', color: '#808080', marginLeft: 4 }}>({fmtTime(new Date(task.nextReadyAt))})</span>}</span></div>}
-              {task.scheduleType === 'tanggal_spesifik' && task.status !== 'selesai' && task.nextReadyAt && <div style={{ display: 'flex', gap: 6 }}><span style={{ color: '#808080', minWidth: 60 }}>Tgl Target:</span><span style={{ color: 'var(--win95-siap)', fontWeight: 'bold' }}>{fmtFull(new Date(task.nextReadyAt))}</span></div>}
-              {task.lastCompletedAt && <div style={{ display: 'flex', gap: 6 }}><span style={{ color: '#808080', minWidth: 60 }}>Terakhir:</span><span>{fmtFull(new Date(task.lastCompletedAt))}</span></div>}
-              {task.link && <div style={{ display: 'flex', gap: 6 }}><span style={{ color: '#808080', minWidth: 60 }}>Link:</span><a href={task.link} target="_blank" rel="noopener" style={{ color: '#0000ff', textDecoration: 'underline' }} onClick={e => e.stopPropagation()}>Buka ↗</a></div>}
-              <div style={{ display: 'flex', gap: 6 }}><span style={{ color: '#808080', minWidth: 60 }}>Dibuat:</span><span>{fmtFull(new Date(task.createdAt))}</span></div>
-            </div>
-          </fieldset>
-          {task.description && <div style={{ marginTop: 6, fontSize: 11, lineHeight: 1.5, padding: '4px 8px', background: '#fff', border: '1px solid #808080' }}>{task.description}</div>}
-          <div style={{ marginTop: 6 }}>
-            <label style={{ fontSize: 11, fontWeight: 'bold', marginBottom: 2, display: 'block' }}>Catatan {saved && <span style={{ fontWeight: 'normal', color: '#808080' }}>({saved})</span>}</label>
-            <textarea className="win95-textarea" rows={2} value={notes} onChange={e => setNotes(e.target.value)} onFocus={() => { isFocusedRef.current = true }} onBlur={() => { isFocusedRef.current = false; blur() }} placeholder="Catatan..." />
-          </div>
+      <div className="win95-dialog detail-dialog" role="dialog" aria-modal="true" aria-label={`Detail ${task.name}`} onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
+        <div className="win95-titlebar">
+          <span className="win95-titlebar-text" title={task.name}>📋 {task.name}</span>
+          <button className="win95-titlebar-btn" aria-label="Tutup" onClick={onClose}>✕</button>
         </div>
-        <div className="win95-dialog-footer" style={{ flexWrap: 'wrap', gap: 4 }}>
-          {task.status === 'siap' && <button className="win95-btn primary" onClick={onComplete}>✅ Selesai</button>}
-          {task.status !== 'siap' && task.scheduleType !== 'sekali' && task.scheduleType !== 'tanggal_spesifik' && <button className="win95-btn" onClick={onReset}>🔄 Reset</button>}
-          <button className="win95-btn" onClick={onTogglePin}>{task.pinned ? '📌 Unpin' : '📌 Pin'}</button>
-          {task.link && <button className="win95-btn" onClick={() => {
-            if (autoCompleteLink && task.status === 'siap') {
-              onComplete()
-            }
-            window.open(task.link!, '_blank', 'noopener,noreferrer')
-          }}>🔗 {autoCompleteLink && task.status === 'siap' ? 'Buka + Selesaikan' : 'Buka'}</button>}
-          <button className="win95-btn" onClick={onEdit}>✏️ Edit</button>
-          <button className="win95-btn" style={{ color: '#cc0000' }} onClick={onDelete}>🗑️ Hapus</button>
+
+        <div className="detail-status" data-status={task.status}>
+          <span className="detail-status-dot" />
+          <b>{statusText}</b>
+          {task.pinned && <span title="Disematkan">📌</span>}
+          <span className="detail-status-prio" style={{ color: '#404040' }}>{priorityLabel(task.priority)}</span>
+        </div>
+
+        <div className="win95-dialog-body detail-body">
+          <div className="detail-grid">
+            {rows.map(r => (
+              <div key={r.label} className="detail-row">
+                <span className="detail-label">{r.label}</span>
+                <span className="detail-value">{r.value}</span>
+              </div>
+            ))}
+          </div>
+
+          {task.description && (
+            <div className="detail-desc">{task.description}</div>
+          )}
+
+          <label htmlFor="detail-task-notes" className="detail-notes-label">
+            Catatan {noteDraft !== undefined ? <span style={{ fontWeight: 'normal', color: '#9b1c1c' }}>· belum tersimpan</span> : saved && <span style={{ fontWeight: 'normal', color: '#404040' }}>· dicoba simpan {saved}</span>}
+          </label>
+          <textarea
+            className="win95-textarea detail-notes"
+            id="detail-task-notes"
+            rows={4}
+            value={notes}
+            onChange={e => setNotes(e.target.value)}
+            onFocus={() => { isFocusedRef.current = true }}
+            onBlur={e => { isFocusedRef.current = false; if (!(e.relatedTarget as HTMLElement | null)?.closest('.detail-note-retry')) blur() }}
+            placeholder="Tulis catatan untuk task ini… (tersimpan otomatis)"
+          />
+          {noteDraft !== undefined && <button type="button" className="v3-btn detail-note-retry" onClick={() => onSaveNotes(task.id, notes)}>Simpan ulang catatan</button>}
+        </div>
+
+        <div className="win95-dialog-footer detail-footer">
+          <div className="detail-footer-main">
+            {isReady && (
+              <button className="v3-btn v3-btn-primary" onClick={onComplete}>✓ Selesai</button>
+            )}
+            {canReset && <button className="v3-btn" onClick={onReset}>Hapus riwayat…</button>}
+            {isSafeHttpUrl(task.link) && (
+              <button className="v3-btn" onClick={() => {
+                if (autoCompleteLink && isReady) onComplete()
+                window.open(task.link!, '_blank', 'noopener,noreferrer')
+              }}>
+                🔗 {autoCompleteLink && isReady ? 'Buka + Selesaikan' : 'Buka link'}
+              </button>
+            )}
+          </div>
+          <div className="detail-footer-side">
+            <button className="v3-btn" onClick={onTogglePin}>{task.pinned ? '📌 Unpin' : '📌 Pin'}</button>
+            <button className="v3-btn" onClick={onEdit}>✏️ Edit</button>
+            <button className="v3-btn detail-danger" onClick={onDelete}>🗑️ Hapus</button>
+            <button className="v3-btn" onClick={onClose}>Tutup</button>
+          </div>
         </div>
       </div>
     </div>

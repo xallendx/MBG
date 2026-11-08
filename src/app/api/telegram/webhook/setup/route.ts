@@ -12,10 +12,12 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'TELEGRAM_BOT_TOKEN belum diatur di environment' }, { status: 500 })
     }
 
+    const secretToken = process.env.TELEGRAM_WEBHOOK_SECRET
+    if (!secretToken) return NextResponse.json({ error: 'TELEGRAM_WEBHOOK_SECRET belum diatur di environment' }, { status: 503 })
+
     const host = req.headers.get('host') || ''
     const protocol = host.includes('localhost') ? 'http' : 'https'
     const webhookUrl = `${protocol}://${host}/api/telegram/webhook`
-    const secretToken = process.env.TELEGRAM_WEBHOOK_SECRET || undefined
 
     const result = await setTelegramWebhook(webhookUrl, secretToken)
     return NextResponse.json({

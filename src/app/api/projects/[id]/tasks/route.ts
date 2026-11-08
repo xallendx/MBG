@@ -1,40 +1,21 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextResponse } from 'next/server'
 import { db } from '@/lib/db'
-import { requireUser } from '@/lib/auth'
+import { ApiError, handleApiError, parseBody, requireUserId } from '@/lib/api'
+import { taskCreateSchema } from '@/lib/schemas'
+import { scheduleInputError } from '@/lib/schedule-input'
 
-const VALID_SCHEDULE_TYPES = ['sekali', 'harian', 'mingguan', 'jam_tertentu', 'tanggal_spesifik', 'kustom']
-const COLOR_RE = /^#[0-9A-Fa-f]{3,8}$/
-
-// GET /api/projects/[id]/tasks — create task directly in project
-export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+// POST /api/projects/[id]/tasks — buat task langsung di dalam project
+export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const userId = await requireUser()
-    if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-
+    const userId = await requireUserId()
     const { id } = await params
-    const body = await req.json()
-    const { name, link, scheduleType, scheduleConfig } = body
+    const input = await parseBody(req, taskCreateSchema)
+    const scheduleError = scheduleInputError(input.scheduleType, input.scheduleConfig)
+    if (scheduleError) throw new ApiError(400, scheduleError, 'INVALID_SCHEDULE')
 
-    if (!name?.trim()) {
-      return NextResponse.json({ error: 'Task name is required' }, { status: 400 })
-    }
-    if (name.length > 200) {
-      return NextResponse.json({ error: 'Nama task maksimal 200 karakter' }, { status: 400 })
-    }
-    if (link !== undefined && link !== null && link.length > 2000) {
-      return NextResponse.json({ error: 'Link maksimal 2000 karakter' }, { status: 400 })
-    }
-    if (scheduleType && !VALID_SCHEDULE_TYPES.includes(scheduleType)) {
-      return NextResponse.json({ error: 'Tipe jadwal tidak valid' }, { status: 400 })
-    }
-
-    // Verify project ownership
     const project = await db.project.findFirst({ where: { id, userId } })
-    if (!project) {
-      return NextResponse.json({ error: 'Project not found' }, { status: 404 })
-    }
+    if (!project) throw new ApiError(404, 'Project tidak ditemukan', 'NOT_FOUND')
 
-    // Get max position
     const maxPos = await db.task.findFirst({
       where: { projectId: id },
       orderBy: { position: 'desc' },
@@ -45,16 +26,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       data: {
         projectId: id,
         userId,
-        name: name.trim(),
-        link: link?.trim() || null,
-        scheduleType: scheduleType || 'sekali',
-        scheduleConfig: typeof scheduleConfig === 'string' ? scheduleConfig : JSON.stringify(scheduleConfig || {}),
+        name: input.name,
+        description: input.description ?? null,
+        link: input.link ?? null,
+        notes: input.notes,
+        pinned: input.pinned,
+        scheduleType: input.scheduleType,
+        scheduleConfig: JSON.stringify(input.scheduleConfig ?? {}),
+        priority: input.priority,
         position: (maxPos?.position ?? -1) + 1,
       },
     })
 
     return NextResponse.json(task, { status: 201 })
-  } catch {
-    return NextResponse.json({ error: 'Failed to create task' }, { status: 500 })
+  } catch (e) {
+    return handleApiError('POST /api/projects/[id]/tasks', e)
   }
 }

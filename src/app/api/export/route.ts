@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { requireUser } from '@/lib/auth'
+import { handleApiError } from '@/lib/api'
+import { parseSettings } from '@/lib/settings'
 
 export async function GET() {
   try {
@@ -23,8 +25,7 @@ export async function GET() {
     ])
 
     const user = await db.user.findUnique({ where: { id: userId } })
-    let settings: Record<string, unknown> = {}
-    try { settings = user?.settings ? JSON.parse(user.settings) : {} } catch { settings = {} }
+    const settings = parseSettings(user?.settings, 'GET /api/export')
 
     const exportData = {
       version: 1,
@@ -38,7 +39,7 @@ export async function GET() {
           id: t.id, name: t.name, description: t.description, link: t.link,
           scheduleType: t.scheduleType, scheduleConfig: config,
           notes: t.notes, pinned: t.pinned, priority: t.priority, position: t.position,
-          project: t.project ? { name: t.project.name, color: t.project.color } : null,
+          project: t.project ? { id: t.project.id, name: t.project.name, color: t.project.color } : null,
           logs: t.logs.map(l => ({ completedAt: l.completedAt.toISOString() }))
         }
       })
@@ -50,7 +51,7 @@ export async function GET() {
         'Content-Disposition': `attachment; filename="mbg-backup-${new Date().toISOString().slice(0, 10)}.json"`
       }
     })
-  } catch {
-    return NextResponse.json({ error: 'Gagal memproses permintaan' }, { status: 500 })
+  } catch (e) {
+    return handleApiError('GET /api/export', e)
   }
 }

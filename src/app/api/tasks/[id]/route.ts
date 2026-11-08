@@ -1,114 +1,86 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
-import { requireUser } from '@/lib/auth'
-
-const VALID_SCHEDULE_TYPES = ['sekali', 'harian', 'mingguan', 'jam_tertentu', 'tanggal_spesifik', 'kustom']
-const VALID_PRIORITIES = ['high', 'medium', 'low']
+import { ApiError, handleApiError, parseBody, requireUserId } from '@/lib/api'
+import { taskUpdateSchema } from '@/lib/schemas'
+import { scheduleInputError } from '@/lib/schedule-input'
 
 export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const ctx = 'PUT /api/tasks/[id]'
   try {
-    const userId = await requireUser()
-    if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    const userId = await requireUserId()
     const { id } = await params
 
     const existing = await db.task.findFirst({ where: { id, userId } })
-    if (!existing) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    if (!existing) throw new ApiError(404, 'Task tidak ditemukan', 'NOT_FOUND')
 
-    const body = await req.json()
-    const { name, description, link, scheduleType, scheduleConfig, projectId, pinned, notes, priority } = body
-
-    if (name !== undefined && name.length > 200) {
-      return NextResponse.json({ error: 'Nama maksimal 200 karakter' }, { status: 400 })
-    }
-    if (description !== undefined && description !== null && description.length > 5000) {
-      return NextResponse.json({ error: 'Deskripsi maksimal 5000 karakter' }, { status: 400 })
-    }
-    if (link !== undefined && link !== null && link.length > 2000) {
-      return NextResponse.json({ error: 'Link maksimal 2000 karakter' }, { status: 400 })
-    }
-    if (scheduleType !== undefined && !VALID_SCHEDULE_TYPES.includes(scheduleType)) {
-      return NextResponse.json({ error: 'Tipe jadwal tidak valid' }, { status: 400 })
-    }
-    if (priority !== undefined && !VALID_PRIORITIES.includes(priority)) {
-      return NextResponse.json({ error: 'Priority tidak valid' }, { status: 400 })
-    }
-    if (notes !== undefined && notes !== null && notes.length > 10000) {
-      return NextResponse.json({ error: 'Catatan maksimal 10000 karakter' }, { status: 400 })
+    const input = await parseBody(req, taskUpdateSchema)
+    if (input.scheduleType !== undefined || input.scheduleConfig !== undefined) {
+      let previous: Record<string, unknown> = {}
+      try { previous = JSON.parse(existing.scheduleConfig) } catch { /* invalid legacy config */ }
+      const error = scheduleInputError(input.scheduleType ?? existing.scheduleType, input.scheduleConfig ?? previous)
+      if (error) throw new ApiError(400, error, 'INVALID_SCHEDULE')
     }
 
-    // Verify project ownership if projectId is being changed
-    if (projectId !== undefined && projectId) {
-      const project = await db.project.findFirst({ where: { id: projectId, userId } })
-      if (!project) return NextResponse.json({ error: 'Project tidak ditemukan' }, { status: 400 })
+    // Verifikasi kepemilikan project tujuan (cegah pindah task ke project orang lain)
+    if (input.projectId) {
+      const project = await db.project.findFirst({ where: { id: input.projectId, userId } })
+      if (!project) throw new ApiError(404, 'Project tidak ditemukan', 'PROJECT_NOT_FOUND')
     }
 
-    // Normalize scheduleConfig: accept both object and string
-    let normalizedConfig: unknown = undefined
-    if (scheduleConfig !== undefined) {
-      if (typeof scheduleConfig === 'string') {
-        try { normalizedConfig = JSON.parse(scheduleConfig) } catch { normalizedConfig = {} }
-      } else {
-        normalizedConfig = scheduleConfig
-      }
-    }
+    // Reset penanda notifikasi kalau jadwal berubah, supaya siklus cooldown
+    // berikutnya tetap mengirim notifikasi.
+    const scheduleChanged = input.scheduleType !== undefined || input.scheduleConfig !== undefined
 
-    // Build update data — reset notification tracking if schedule changes
-    const scheduleChanged = scheduleType !== undefined || normalizedConfig !== undefined
     const task = await db.task.update({
       where: { id },
       data: {
-        ...(name !== undefined && { name: name.trim() }),
-        ...(description !== undefined && { description: description?.trim() || null }),
-        ...(link !== undefined && { link: link?.trim() || null }),
-        ...(scheduleType !== undefined && { scheduleType }),
-        ...(normalizedConfig !== undefined && { scheduleConfig: JSON.stringify(normalizedConfig) }),
-        ...(projectId !== undefined && { projectId: projectId || null }),
-        ...(pinned !== undefined && { pinned }),
-        ...(priority !== undefined && { priority }),
-        ...(notes !== undefined && { notes: notes || null }),
-        // Reset notification tracking when schedule changes
+        ...(input.name !== undefined && { name: input.name }),
+        ...(input.description !== undefined && { description: input.description }),
+        ...(input.link !== undefined && { link: input.link }),
+        ...(input.scheduleType !== undefined && { scheduleType: input.scheduleType }),
+        ...(input.scheduleConfig !== undefined && { scheduleConfig: JSON.stringify(input.scheduleConfig) }),
+        ...(input.projectId !== undefined && { projectId: input.projectId }),
+        ...(input.pinned !== undefined && { pinned: input.pinned }),
+        ...(input.priority !== undefined && { priority: input.priority }),
+        ...(input.notes !== undefined && { notes: input.notes }),
+        ...(input.position !== undefined && { position: input.position }),
         ...(scheduleChanged && { notifiedWarnAt: null, notifiedReadyAt: null }),
       },
-      include: { project: true }
+      include: { project: true },
     })
 
     return NextResponse.json(task)
-  } catch {
-    return NextResponse.json({ error: 'Request failed' }, { status: 500 })
+  } catch (e) {
+    return handleApiError(ctx, e)
   }
 }
 
-export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const ctx = 'DELETE /api/tasks/[id]'
   try {
-    const userId = await requireUser()
-    if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    const userId = await requireUserId()
     const { id } = await params
 
-    // Use transaction: verify ownership, delete logs first, then task
-    // Belt-and-suspenders: even though DB has CASCADE, explicitly delete logs
-    // to avoid edge cases with pgbouncer transaction pooling
+    // Transaksi: verifikasi kepemilikan → hapus log → hapus task.
+    // Log dihapus eksplisit meski schema sudah CASCADE, karena dengan pgbouncer
+    // (transaction pooling) cascade kadang tidak seperti yang diharapkan.
     const result = await db.$transaction(async (tx) => {
       const existing = await tx.task.findFirst({ where: { id, userId } })
       if (!existing) return 'not_found'
 
-      // Explicitly delete logs first (redundant with CASCADE but more reliable with pgbouncer)
       await tx.taskLog.deleteMany({ where: { taskId: id } })
-      // Clear notification timestamps
       await tx.task.update({
         where: { id },
-        data: { notifiedWarnAt: null, notifiedReadyAt: null }
+        data: { notifiedWarnAt: null, notifiedReadyAt: null },
       })
-      // Delete the task
       await tx.task.delete({ where: { id } })
       return 'ok'
     })
 
-    if (result === 'not_found') {
-      return NextResponse.json({ error: 'Not found' }, { status: 404 })
-    }
+    if (result === 'not_found') throw new ApiError(404, 'Task tidak ditemukan', 'NOT_FOUND')
+
     return NextResponse.json({ success: true })
   } catch (e) {
-    console.error('[DELETE /api/tasks/[id]]', e)
-    return NextResponse.json({ error: 'Request failed' }, { status: 500 })
+    return handleApiError(ctx, e)
   }
 }

@@ -1,118 +1,38 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextResponse } from 'next/server'
 import { db } from '@/lib/db'
-import { requireUser } from '@/lib/auth'
+import { ApiError, handleApiError, requireUserId } from '@/lib/api'
+import { validateProjectImport } from '@/lib/import-project'
 
-export async function POST(req: NextRequest) {
-  const userId = await requireUser()
-  if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-
+export async function POST(req: Request) {
   try {
-    const data = await req.json()
-    const { project: projectData, tasks: tasksData, targetProjectId } = data
-
-    if (!projectData?.name || !Array.isArray(tasksData)) {
-      return NextResponse.json({ error: 'Format tidak valid: butuh { project, tasks }' }, { status: 400 })
-    }
-
-    // If targetProjectId is provided, import tasks INTO that existing project
-    if (targetProjectId) {
-      const targetProject = await db.project.findFirst({ where: { id: targetProjectId, userId } })
-      if (!targetProject) {
-        return NextResponse.json({ error: 'Target project tidak ditemukan' }, { status: 404 })
+    const userId = await requireUserId()
+    if (Number(req.headers.get('content-length') || 0) > 5_000_000) throw new ApiError(413, 'File terlalu besar (maksimal 5MB)')
+    const text = await req.text()
+    if (Buffer.byteLength(text, 'utf8') > 5_000_000) throw new ApiError(413, 'File terlalu besar (maksimal 5MB)')
+    let raw: unknown
+    try { raw = JSON.parse(text) } catch { throw new ApiError(400, 'File JSON tidak valid') }
+    const input = validateProjectImport(raw)
+    const obj = raw as Record<string, unknown>
+    const targetProjectId = obj.targetProjectId
+    if (targetProjectId != null && (typeof targetProjectId !== 'string' || targetProjectId.length > 64)) throw new ApiError(400, 'Target proyek tidak valid')
+    const result = await db.$transaction(async tx => {
+      let project
+      if (targetProjectId) {
+        project = await tx.project.findFirst({ where: { id: targetProjectId as string, userId } })
+        if (!project) throw new ApiError(404, 'Target project tidak ditemukan')
+      } else {
+        const existing = await tx.project.findFirst({ where: { userId, name: input.name } })
+        const max = await tx.project.findFirst({ where: { userId }, orderBy: { position: 'desc' }, select: { position: true } })
+        project = await tx.project.create({ data: { userId, name: existing ? `${input.name} (imported)` : input.name, color: input.color, position: (max?.position ?? 0) + 1 } })
       }
-
-      let taskCount = 0
-      const maxTaskPos = await db.task.findFirst({
-        where: { userId },
-        orderBy: { position: 'desc' },
-        select: { position: true },
-      })
-
-      for (const t of tasksData) {
-        if (!t.name?.trim()) continue
-        await db.task.create({
-          data: {
-            userId,
-            name: t.name.trim(),
-            description: t.description?.trim() || null,
-            link: t.link?.trim() || null,
-            scheduleType: t.scheduleType || 'sekali',
-            scheduleConfig: JSON.stringify(t.scheduleConfig || {}),
-            notes: t.notes || null,
-            pinned: t.pinned || false,
-            priority: t.priority || 'medium',
-            position: (maxTaskPos?.position || 0) + taskCount + 1,
-            projectId: targetProjectId,
-          },
-        })
-        taskCount++
-      }
-
-      return NextResponse.json({
-        success: true,
-        projectId: targetProjectId,
-        projectName: targetProject.name,
-        taskCount,
-      })
-    }
-
-    // No targetProjectId: create a new project (original behavior)
-    let projectName = projectData.name.trim()
-    const existing = await db.project.findFirst({ where: { userId, name: projectName } })
-    if (existing) {
-      projectName = `${projectName} (imported)`
-    }
-
-    const maxProjectPos = await db.project.findFirst({
-      where: { userId },
-      orderBy: { position: 'desc' },
-      select: { position: true },
+      const max = await tx.task.findFirst({ where: { userId }, orderBy: { position: 'desc' }, select: { position: true } })
+      if (input.tasks.length) await tx.task.createMany({ data: input.tasks.map((t, i) => ({
+        userId, projectId: project.id, name: t.name, description: t.description, link: t.link,
+        scheduleType: t.scheduleType, scheduleConfig: JSON.stringify(t.scheduleConfig), notes: t.notes,
+        pinned: t.pinned, priority: t.priority, position: (max?.position ?? 0) + i + 1,
+      })) })
+      return { projectId: project.id, projectName: project.name, taskCount: input.tasks.length }
     })
-
-    const newProject = await db.project.create({
-      data: {
-        userId,
-        name: projectName,
-        color: projectData.color || '#000080',
-        position: (maxProjectPos?.position || 0) + 1,
-      },
-    })
-
-    let taskCount = 0
-    const maxTaskPos = await db.task.findFirst({
-      where: { userId },
-      orderBy: { position: 'desc' },
-      select: { position: true },
-    })
-
-    for (const t of tasksData) {
-      if (!t.name?.trim()) continue
-      await db.task.create({
-        data: {
-          userId,
-          name: t.name.trim(),
-          description: t.description?.trim() || null,
-          link: t.link?.trim() || null,
-          scheduleType: t.scheduleType || 'sekali',
-          scheduleConfig: JSON.stringify(t.scheduleConfig || {}),
-          notes: t.notes || null,
-          pinned: t.pinned || false,
-          priority: t.priority || 'medium',
-          position: (maxTaskPos?.position || 0) + taskCount + 1,
-          projectId: newProject.id,
-        },
-      })
-      taskCount++
-    }
-
-    return NextResponse.json({
-      success: true,
-      projectId: newProject.id,
-      projectName,
-      taskCount,
-    })
-  } catch (e) {
-    console.error('Project import error:', e)
-    return NextResponse.json({ error: 'Gagal import' }, { status: 500 })
-  }
+    return NextResponse.json({ success: true, ...result })
+  } catch (e) { return handleApiError('POST /api/projects/import', e) }
 }

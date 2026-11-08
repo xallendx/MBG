@@ -9,31 +9,31 @@ datasource db {
 }
 
 model User {
-  id           String         @id @default(cuid())
-  username     String         @unique
-  passwordHash String
-  displayName  String?
-  role         String         @default("USER")  // USER, ADMIN
-  isBlocked    Boolean        @default(false)
-  settings     String         @default("{}")
-  telegramId   String?
-  projects     Project[]
-  tasks        Task[]
-  notes        Note[]
-  templates    TaskTemplate[]
+  id                String             @id @default(cuid())
+  username          String             @unique
+  passwordHash      String
+  displayName       String?
+  role              String             @default("USER") // USER, ADMIN
+  isBlocked         Boolean            @default(false)
+  settings          String             @default("{}")
+  telegramId        String?
+  projects          Project[]
+  tasks             Task[]
+  notes             Note[]
+  templates         TaskTemplate[]
   pushSubscriptions PushSubscription[]
-  createdAt    DateTime       @default(now())
-  updatedAt    DateTime       @updatedAt
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
 }
 
 model Project {
-  id       String   @id @default(cuid())
-  userId   String
-  name     String
-  color    String   @default("#000080")
-  position Int      @default(0)
-  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  tasks    Task[]
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  color     String   @default("#000080")
+  position  Int      @default(0)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tasks     Task[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -41,25 +41,25 @@ model Project {
 }
 
 model Task {
-  id                String    @id @default(cuid())
-  userId            String
-  projectId         String?
-  name              String
-  description       String?
-  link              String?
-  scheduleType      String    @default("sekali")
-  scheduleConfig    String    @default("{}")
-  priority          String    @default("medium")
-  notes             String?
-  pinned            Boolean   @default(false)
-  position          Int       @default(0)
-  notifiedWarnAt    DateTime?
-  notifiedReadyAt   DateTime?
-  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  project           Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
-  logs              TaskLog[]
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  id              String    @id @default(cuid())
+  userId          String
+  projectId       String?
+  name            String
+  description     String?
+  link            String?
+  scheduleType    String    @default("sekali")
+  scheduleConfig  String    @default("{}")
+  priority        String    @default("medium")
+  notes           String?
+  pinned          Boolean   @default(false)
+  position        Int       @default(0)
+  notifiedWarnAt  DateTime?
+  notifiedReadyAt DateTime?
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project         Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  logs            TaskLog[]
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
   @@index([userId])
   @@index([projectId])
@@ -99,12 +99,12 @@ model SharedProject {
 }
 
 model InviteCode {
-  id        String   @id @default(cuid())
-  code      String   @unique
-  role      String   @default("USER")
+  id        String    @id @default(cuid())
+  code      String    @unique
+  role      String    @default("USER")
   usedBy    String?
   usedAt    DateTime?
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
 }
 
 model TaskTemplate {
@@ -127,9 +127,22 @@ model PushSubscription {
   id        String   @id @default(cuid())
   userId    String
   endpoint  String   @unique
-  keys      String   // JSON: { auth, p256dh }
+  keys      String // JSON: { auth, p256dh }
   createdAt DateTime @default(now())
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+}
+
+/// Rate limit berbasis database.
+/// Sebelumnya rate limit disimpan di `Map` dalam memori proses — di lingkungan
+/// serverless setiap instance punya memori sendiri dan cold start menghapusnya,
+/// sehingga batas percobaan login/kode undangan praktis tidak berlaku.
+/// Tabel ini membuat hitungan konsisten lintas instance.
+model RateLimit {
+  key         String   @id
+  count       Int      @default(0)
+  windowStart DateTime @default(now())
+
+  @@index([windowStart])
 }

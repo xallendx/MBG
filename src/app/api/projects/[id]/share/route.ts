@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { randomInt } from 'node:crypto'
 import { db } from '@/lib/db'
 import { requireUser } from '@/lib/auth'
-
-const COLOR_RE = /^#[0-9A-Fa-f]{3,8}$/
+import { handleApiError } from '@/lib/api'
 
 // POST /api/projects/[id]/share — share project via code
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -41,14 +41,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       taskCount: tasks.length
     })
   } catch (e) {
-    console.error('Share project error:', e)
-    return NextResponse.json({ error: 'Gagal membagikan project' }, { status: 500 })
+    return handleApiError('POST /api/projects/[id]/share', e)
   }
 }
 
 function genCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
   let code = ''
-  for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)]
+  for (let i = 0; i < 6; i++) code += chars[randomInt(chars.length)]
   return code
 }

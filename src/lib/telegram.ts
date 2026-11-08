@@ -1,6 +1,9 @@
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || ''
 
-const TELEGRAM_API = 'https://api.telegram.org/bot'
+// Base URL bisa dioverride lewat TELEGRAM_API_BASE — berguna untuk:
+//   - pengujian otomatis (mock server lokal),
+//   - self-host yang memakai proxy/relay Bot API.
+const TELEGRAM_API_BASE = process.env.TELEGRAM_API_BASE || 'https://api.telegram.org'
 
 export async function sendTelegramMessage(chatId: number | string, text: string, parseMode?: 'HTML' | 'Markdown') {
   if (!TELEGRAM_BOT_TOKEN) {
@@ -13,7 +16,7 @@ export async function sendTelegramMessage(chatId: number | string, text: string,
   }
   if (parseMode) body.parse_mode = parseMode
 
-  const res = await fetch(`${TELEGRAM_API}${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+  const res = await fetch(`${TELEGRAM_API_BASE}/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -40,7 +43,7 @@ export async function setTelegramWebhook(url: string, secretToken?: string) {
     payload.secret_token = secretToken
   }
 
-  const res = await fetch(`${TELEGRAM_API}${TELEGRAM_BOT_TOKEN}/setWebhook`, {
+  const res = await fetch(`${TELEGRAM_API_BASE}/bot${TELEGRAM_BOT_TOKEN}/setWebhook`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),

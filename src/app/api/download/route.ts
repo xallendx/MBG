@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { requireUser } from '@/lib/auth'
+import { handleApiError } from '@/lib/api'
 
 // Download endpoint — disabled on Vercel (no filesystem access)
 // On self-hosted deployments, this serves a local zip file
@@ -31,7 +32,7 @@ export async function GET() {
         'Content-Length': buffer.length.toString(),
       },
     })
-  } catch {
-    return NextResponse.json({ error: 'Gagal membaca file' }, { status: 500 })
+  } catch (e) {
+    return handleApiError('GET /api/download', e)
   }
 }

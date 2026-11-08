@@ -1,71 +1,50 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextResponse } from 'next/server'
 import { db } from '@/lib/db'
-import { requireUser } from '@/lib/auth'
+import { ApiError, handleApiError, parseBody, requireUserId } from '@/lib/api'
+import { settingsUpdateSchema } from '@/lib/schemas'
+import { mergeSettings, parseSettings, resolveSettings } from '@/lib/settings'
 
-const ALLOWED_SETTINGS = [
-  'timezone', 'timeFormat', 'autoExpandSiap', 'autoCompleteLink',
-  'telegramNotifEnabled', 'browserNotifEnabled', 'pomodoroDuration',
-  'audioAlertEnabled', 'telegramBotUsername', 'notifyBeforeCooldownMin'
-]
-
-// Type validators for each setting key
-const SETTINGS_VALIDATORS: Record<string, (v: unknown) => boolean> = {
-  timezone: (v) => typeof v === 'string' && ['WIB', 'WITA', 'WIT'].includes(v),
-  timeFormat: (v) => v === '12' || v === '24',
-  autoExpandSiap: (v) => typeof v === 'boolean',
-  autoCompleteLink: (v) => typeof v === 'boolean',
-  telegramNotifEnabled: (v) => typeof v === 'boolean',
-  browserNotifEnabled: (v) => typeof v === 'boolean',
-  pomodoroDuration: (v) => typeof v === 'number' && v >= 1 && v <= 120,
-  audioAlertEnabled: (v) => typeof v === 'boolean',
-  telegramBotUsername: (v) => typeof v === 'string' && v.length <= 100,
-  notifyBeforeCooldownMin: (v) => typeof v === 'number' && v >= 1 && v <= 60,
-}
+/**
+ * Pengaturan disimpan sebagai kolom JSON string (lihat model User).
+ *
+ * Dulu nilai yang tidak valid **diam-diam dibuang** ("silently skip invalid
+ * values"), sehingga user mengira pengaturannya tersimpan padahal tidak — mis.
+ * `notifyBeforeCooldownMin: "5"` (string) hilang tanpa pesan. Sekarang nilai
+ * tidak valid ditolak dengan pesan jelas, dan key yang tidak dikenal ditolak.
+ */
 
 export async function GET() {
   try {
-    const userId = await requireUser()
-    if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-
+    const userId = await requireUserId()
     const user = await db.user.findUnique({ where: { id: userId } })
-    let settings: Record<string, unknown> = {}
-    try { settings = user?.settings ? JSON.parse(user.settings) : {} } catch { settings = {} }
-    return NextResponse.json(settings)
-  } catch {
-    return NextResponse.json({ error: 'Request failed' }, { status: 500 })
+
+    // resolveSettings: JSON rusak / nilai lama yang tidak valid tidak lagi bocor
+    // ke klien — field bermasalah diganti default yang aman.
+    return NextResponse.json(resolveSettings(user?.settings, 'GET /api/settings'))
+  } catch (e) {
+    return handleApiError('GET /api/settings', e)
   }
 }
 
-export async function PUT(req: NextRequest) {
+export async function PUT(req: Request) {
+  const ctx = 'PUT /api/settings'
   try {
-    const userId = await requireUser()
-    if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    const userId = await requireUserId()
+    const patch = await parseBody(req, settingsUpdateSchema)
 
-    const body = await req.json()
-    const user = await db.user.findUnique({ where: { id: userId } })
-    let currentSettings: Record<string, unknown> = {}
-    try { currentSettings = user?.settings ? JSON.parse(user.settings) : {} } catch { currentSettings = {} }
+    const user = await db.user.findUnique({ where: { id: userId }, select: { settings: true } })
+    if (!user) throw new ApiError(401, 'Sesi tidak valid. Silakan login ulang.', 'UNAUTHORIZED')
 
-    // Whitelist + type validation: only allow known keys with valid types
-    const sanitized: Record<string, unknown> = {}
-    for (const key of ALLOWED_SETTINGS) {
-      if (key in body) {
-        const validator = SETTINGS_VALIDATORS[key]
-        if (validator && validator(body[key])) {
-          sanitized[key] = body[key]
-        }
-        // Silently skip invalid values — don't store malformed data
-      }
-    }
-
-    const merged = { ...currentSettings, ...sanitized }
+    const current = parseSettings(user.settings, ctx)
+    // Key lama yang tidak dikenal tetap tersimpan; hanya key yang dikirim yang diubah.
+    const merged = mergeSettings(current, patch as Record<string, unknown>)
     await db.user.update({
       where: { id: userId },
-      data: { settings: JSON.stringify(merged) }
+      data: { settings: JSON.stringify(merged) },
     })
 
     return NextResponse.json(merged)
-  } catch {
-    return NextResponse.json({ error: 'Request failed' }, { status: 500 })
+  } catch (e) {
+    return handleApiError(ctx, e)
   }
 }

@@ -1,16 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { requireAdmin } from '@/lib/auth'
+import { handleApiError, parseBody } from '@/lib/api'
+import { adminUserUpdateSchema } from '@/lib/schemas'
 
 // PUT /api/admin/users/[id] — block/unblock user, ubah role
-export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { error, user: adminUser } = await requireAdmin()
     if (error) return error
 
     const { id } = await params
-    const body = await req.json()
-    const { isBlocked, role } = body
+    const { isBlocked, role } = await parseBody(req, adminUserUpdateSchema)
 
     // Cek user target ada
     const target = await db.user.findUnique({ where: { id } })
@@ -48,7 +49,6 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
 
     return NextResponse.json(updated)
   } catch (e) {
-    console.error('Admin update user error:', e)
-    return NextResponse.json({ error: 'Request failed' }, { status: 500 })
+    return handleApiError('api/admin/users/[id]', e)
   }
 }

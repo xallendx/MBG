@@ -2,10 +2,10 @@ import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { requireUser } from '@/lib/auth'
 import { getNextReadyAt, computeStatus } from '@/lib/schedule'
-
-const VALID_SCHEDULE_TYPES = ['sekali', 'harian', 'mingguan', 'jam_tertentu', 'tanggal_spesifik', 'kustom']
-const VALID_PRIORITIES = ['high', 'medium', 'low']
-const COLOR_RE = /^#[0-9A-Fa-f]{3,8}$/
+import { ApiError, handleApiError, parseBody, requireUserId } from '@/lib/api'
+import { taskCreateSchema } from '@/lib/schemas'
+import { getTimezone } from '@/lib/settings'
+import { scheduleInputError } from '@/lib/schedule-input'
 
 export async function GET() {
   try {
@@ -14,8 +14,7 @@ export async function GET() {
 
     // Fetch user settings for timezone
     const user = await db.user.findUnique({ where: { id: userId }, select: { settings: true } }).catch(() => null)
-    let userTz = 'WIB'
-    try { userTz = user?.settings ? (JSON.parse(user.settings).timezone as string) || 'WIB' : 'WIB' } catch { /* use default */ }
+    const userTz = getTimezone(user?.settings, 'GET /api/tasks')
 
     const tasks = await db.task.findMany({
       where: { userId },
@@ -57,7 +56,8 @@ export async function GET() {
           project: t.project ? { id: t.project.id, name: t.project.name, color: t.project.color } : null
         }
       } catch (e) {
-        console.error('[enrichment error for task]', t.id, e)
+        // Task tetap ditampilkan (dengan status aman) tapi kegagalannya dicatat.
+        handleApiError('enrich-task', e)
         return {
           ...t,
           status: 'siap' as const,
@@ -90,78 +90,54 @@ export async function GET() {
 
     return NextResponse.json(sorted)
   } catch (e) {
-    console.error('[GET /api/tasks]', e)
-    return NextResponse.json({ error: 'Request failed' }, { status: 500 })
+    return handleApiError('GET /api/tasks', e)
   }
 }
 
 export async function POST(req: NextRequest) {
+  const ctx = 'POST /api/tasks'
   try {
-    const userId = await requireUser()
-    if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-
-    const body = await req.json()
-    const { name, description, link, scheduleType, scheduleConfig, projectId, pinned, priority } = body
-
-    if (!name?.trim()) {
-      return NextResponse.json({ error: 'Nama task wajib diisi' }, { status: 400 })
-    }
-    if (name.length > 200) {
-      return NextResponse.json({ error: 'Nama maksimal 200 karakter' }, { status: 400 })
-    }
-    if (description !== undefined && description !== null && description.length > 5000) {
-      return NextResponse.json({ error: 'Deskripsi maksimal 5000 karakter' }, { status: 400 })
-    }
-    if (link !== undefined && link !== null && link.length > 2000) {
-      return NextResponse.json({ error: 'Link maksimal 2000 karakter' }, { status: 400 })
-    }
-    if (scheduleType && !VALID_SCHEDULE_TYPES.includes(scheduleType)) {
-      return NextResponse.json({ error: 'Tipe jadwal tidak valid' }, { status: 400 })
-    }
-    if (priority && !VALID_PRIORITIES.includes(priority)) {
-      return NextResponse.json({ error: 'Priority tidak valid' }, { status: 400 })
-    }
-
-    // Normalize scheduleConfig: accept both object and string, always store as JSON string
-    let config = scheduleConfig || {}
-    if (typeof config === 'string') {
-      try { config = JSON.parse(config) } catch { config = {} }
-    }
+    const userId = await requireUserId()
+    const input = await parseBody(req, taskCreateSchema)
+    const scheduleError = scheduleInputError(input.scheduleType, input.scheduleConfig)
+    if (scheduleError) throw new ApiError(400, scheduleError, 'INVALID_SCHEDULE')
 
     // BUG FIX: Wrap position lookup + create in transaction to prevent race condition
     const task = await db.$transaction(async (tx) => {
       const maxPos = await tx.task.findFirst({
         where: { userId },
         orderBy: { position: 'desc' },
-        select: { position: true }
+        select: { position: true },
       })
 
-      // Verify project ownership if projectId is provided
-      if (projectId) {
-        const project = await tx.project.findFirst({ where: { id: projectId, userId } })
-        if (!project) throw new Error('Project tidak ditemukan')
+      // Verifikasi kepemilikan project (cegah menempelkan task ke project user lain)
+      if (input.projectId) {
+        const project = await tx.project.findFirst({ where: { id: input.projectId, userId } })
+        if (!project) {
+          throw new ApiError(404, 'Project tidak ditemukan', 'PROJECT_NOT_FOUND')
+        }
       }
 
       return tx.task.create({
         data: {
           userId,
-          name: name.trim(),
-          description: description?.trim() || null,
-          link: link?.trim() || null,
-          scheduleType: scheduleType || 'sekali',
-          scheduleConfig: JSON.stringify(config),
-          projectId: projectId || null,
-          pinned: pinned || false,
-          priority: priority || 'medium',
-          position: (maxPos?.position || 0) + 1
+          name: input.name,
+          description: input.description,
+          link: input.link,
+          notes: input.notes,
+          scheduleType: input.scheduleType,
+          scheduleConfig: JSON.stringify(input.scheduleConfig),
+          projectId: input.projectId,
+          pinned: input.pinned,
+          priority: input.priority,
+          position: (maxPos?.position || 0) + 1,
         },
-        include: { project: true }
+        include: { project: true },
       })
     })
 
     return NextResponse.json(task, { status: 201 })
   } catch (e) {
-    console.error('[POST /api/tasks]', e)
-    return NextResponse.json({ error: 'Request failed' }, { status: 500 })
+    return handleApiError(ctx, e)
   }
 }

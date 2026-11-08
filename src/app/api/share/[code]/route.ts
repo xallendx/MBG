@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
+import { handleApiError, requireUserId } from '@/lib/api'
+import { limitShareLookup } from '@/lib/share-rate-limit'
 
 // Simple in-memory rate limiter for share preview (prevent abuse of accessCount increment)
 const sharePreviewCounts = new Map<string, { count: number; resetAt: number }>()
@@ -26,6 +28,8 @@ function isRateLimited(code: string): boolean {
 // GET /api/share/[code] — Preview shared project data
 export async function GET(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
   try {
+    const userId = await requireUserId()
+    await limitShareLookup(req, userId)
     const { code } = await params
     if (!code || code.length !== 6) {
       return NextResponse.json({ error: 'Kode tidak valid' }, { status: 400 })
@@ -59,7 +63,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ code
     } catch {
       return NextResponse.json({ error: 'Data tidak valid' }, { status: 500 })
     }
-  } catch {
-    return NextResponse.json({ error: 'Request failed' }, { status: 500 })
+  } catch (e) {
+    return handleApiError('api/share/[code]', e)
   }
 }

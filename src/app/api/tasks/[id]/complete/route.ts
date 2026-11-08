@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { requireUser } from '@/lib/auth'
 import { computeStatus, getNextReadyAt } from '@/lib/schedule'
+import { handleApiError } from '@/lib/api'
+import { getTimezone } from '@/lib/settings'
 
 export async function POST(_: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -11,11 +13,14 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
 
     // Fetch user settings for timezone
     const user = await db.user.findUnique({ where: { id: userId }, select: { settings: true } }).catch(() => null)
-    let userTz = 'WIB'
-    try { userTz = user?.settings ? (JSON.parse(user.settings).timezone as string) || 'WIB' : 'WIB' } catch { /* use default */ }
+    const userTz = getTimezone(user?.settings, 'POST /api/tasks/[id]/complete')
 
     // Use transaction to prevent double-completion race condition
     const result = await db.$transaction(async (tx) => {
+      // Kunci baris sebelum membaca log/status. Transaksi saja pada tingkat
+      // READ COMMITTED tidak mencegah dua permintaan membaca status siap.
+      const locked = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM "Task" WHERE id = ${id} AND "userId" = ${userId} FOR UPDATE`
+      if (!locked.length) return { error: 'Not found', status: 404 as const }
       const task = await tx.task.findFirst({
         where: { id, userId },
         include: {
@@ -39,7 +44,7 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
         }
       })
 
-      await tx.taskLog.create({
+      const createdLog = await tx.taskLog.create({
         data: { taskId: id }
       })
 
@@ -48,6 +53,7 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
         where: { id, userId },
         include: {
           logs: { orderBy: { completedAt: 'desc' }, take: 1 },
+          _count: { select: { logs: true } },
           project: { select: { id: true, name: true, color: true } },
         }
       })
@@ -78,20 +84,21 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
 
       return {
         success: true as const,
+        logId: createdLog.id,
         task: {
           status: newStatus,
           nextReadyAt: nextReady instanceof Date && !isNaN(nextReady.getTime()) ? nextReady.toISOString() : null,
           lastCompletedAt: lastCompleted?.toISOString() || null,
           cooldownRemaining,
           cooldownMs,
-          logCount: updatedTask.logs.length,
+          logCount: updatedTask._count.logs,
         }
       }
     })
 
     if ('error' in result) return NextResponse.json({ error: result.error }, { status: result.status })
-    return NextResponse.json({ success: true, task: result.task ?? null })
-  } catch {
-    return NextResponse.json({ error: 'Request failed' }, { status: 500 })
+    return NextResponse.json({ success: true, logId: result.logId ?? null, task: result.task ?? null })
+  } catch (e) {
+    return handleApiError('api/tasks/[id]/complete', e)
   }
 }

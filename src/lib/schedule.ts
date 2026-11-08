@@ -5,6 +5,7 @@ export interface ScheduleTask {
   scheduleType: string
   scheduleConfig: string
   logs: { completedAt: Date }[]
+  createdAt?: Date | string
 }
 
 // Map user-friendly timezone names to IANA timezone identifiers
@@ -29,17 +30,15 @@ function safeDate(v: unknown): Date | null {
  * Works correctly regardless of server timezone.
  */
 function getUtcOffsetMs(date: Date, ianaTz: string): number {
-  // Format full date+time in both UTC and target timezone
-  const utcStr = date.toLocaleString('en-US', { timeZone: 'UTC', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
-  const tzStr = date.toLocaleString('en-US', { timeZone: ianaTz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
-  const parseParts = (s: string) => s.match(/(\d{2})\/(\d{2})\/(\d{4}),?\s+(\d{2}):(\d{2}):(\d{2})/)
-  const u = parseParts(tzStr)
-  const c = parseParts(utcStr)
-  if (!u || !c) return 0
-  // Compute total ms difference between timezone and UTC
-  const tzMs = parseInt(u[3]) * 86400000 + parseInt(u[4]) * 3600000 + parseInt(u[5]) * 60000 + parseInt(u[6]) * 1000
-  const utcMs = parseInt(c[3]) * 86400000 + parseInt(c[4]) * 3600000 + parseInt(c[5]) * 60000 + parseInt(c[6]) * 1000
-  return tzMs - utcMs
+  // Gunakan tanggal lengkap, bukan hanya hari-dalam-bulan: selisih hari
+  // 31 Desember → 1 Januari tidak boleh terbaca sebagai -30 hari.
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: ianaTz, year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+  }).formatToParts(date)
+  const value = (key: Intl.DateTimeFormatPartTypes) => Number(parts.find(p => p.type === key)?.value)
+  const asUtc = Date.UTC(value('year'), value('month') - 1, value('day'), value('hour'), value('minute'), value('second'))
+  return asUtc - Math.floor(date.getTime() / 1000) * 1000
 }
 
 /**
@@ -79,14 +78,17 @@ function getUserMidnightToday(utcNow: Date, timezone: string): Date {
   const iana = TZ_MAP[timezone] || 'Asia/Jakarta'
   const dateStr = utcNow.toLocaleDateString('en-CA', { timeZone: iana }) // YYYY-MM-DD
   const parts = dateStr.split('-')
-  // Create a Date at midnight in the user's timezone, then convert to UTC
-  const userMidnight = new Date(
+  // BUG FIX: pakai Date.UTC, bukan `new Date(y, m, d)`.
+  // `new Date(y, m, d)` mengikuti timezone proses server, sehingga hasilnya
+  // berbeda antara server UTC (Vercel) dan server WIB/WITA (self-host).
+  // Dengan Date.UTC + koreksi offset, hasilnya sama di mana pun dijalankan.
+  const userMidnightUtcNaive = new Date(Date.UTC(
     parseInt(parts[0]),
     parseInt(parts[1]) - 1,
     parseInt(parts[2]),
     0, 0, 0, 0
-  )
-  return userLocalToUTC(userMidnight, timezone)
+  ))
+  return userLocalToUTC(userMidnightUtcNaive, timezone)
 }
 
 export function getNextReadyAt(task: ScheduleTask, timezone?: string): Date | null {
@@ -103,31 +105,24 @@ export function getNextReadyAt(task: ScheduleTask, timezone?: string): Date | nu
     .filter((d): d is Date => d !== null)
     .sort((a, b) => b.getTime() - a.getTime())
   const lastLog = validLogs.length > 0 ? validLogs[0] : null
+  const createdAt = task.createdAt ? safeDate(task.createdAt) : null
 
   switch (task.scheduleType) {
     case 'sekali':
       return null
 
     case 'tanggal_spesifik': {
-      const dates: string[] = (config.dates as string[]) || []
-      if (dates.length === 0) return now
-      const parsed = dates.map(d => {
-        const dParts = d.split('-')
-        if (dParts.length !== 3) return null
-        const tempDate = new Date(
-          parseInt(dParts[0]),
-          parseInt(dParts[1]) - 1,
-          parseInt(dParts[2]),
-          0, 0, 0, 0
-        )
-        return userLocalToUTC(tempDate, tz)
-      }).filter((d): d is Date => d !== null && !isNaN(d.getTime()))
-      const futureDates = parsed.filter(d => d >= now).sort((a, b) => a.getTime() - b.getTime())
-      if (futureDates.length === 0) {
-        return task.logs.length > 0 ? null : now
-      }
-      if (task.logs.length === 0) return futureDates[0]
-      return null
+      // Tanggal adalah waktu mulai siap, bukan deadline. Tugas hanya sekali.
+      if (lastLog) return null
+      const dates = Array.isArray(config.dates) ? config.dates : []
+      const parsed = dates.filter((d): d is string => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d)).map(d => {
+        const [year, month, day] = d.split('-').map(Number)
+        const dt = new Date(Date.UTC(year, month - 1, day))
+        if (dt.getUTCFullYear() !== year || dt.getUTCMonth() !== month - 1 || dt.getUTCDate() !== day) return null
+        return userLocalToUTC(dt, tz)
+      }).filter((d): d is Date => d !== null).sort((x, y) => x.getTime() - y.getTime())
+      // Beberapa tanggal lama: siap sejak tanggal pertama, tidak lompat ke tanggal berikutnya.
+      return parsed[0] ?? now
     }
 
     case 'harian': case 'kustom': {
@@ -139,39 +134,39 @@ export function getNextReadyAt(task: ScheduleTask, timezone?: string): Date | nu
     }
 
     case 'mingguan': {
-      const targetDay = (config.dayOfWeek as number) ?? 0 // 0=Minggu ... 6=Sabtu
-      const cdHours = (config.cooldownHours as number) || 24
-      const currentDay = getUserDayOfWeek(now, tz)
-      let daysUntil = targetDay - currentDay
-      if (daysUntil < 0) daysUntil += 7
-      if (daysUntil === 0 && lastLog) {
-        const hoursSince = (now.getTime() - lastLog.getTime()) / 3600000
-        if (hoursSince < cdHours) daysUntil = 7
-      }
-      const userMidnight = getUserMidnightToday(now, tz)
-      const nextMidnight = new Date(userMidnight.getTime() + daysUntil * 86400000)
-      if (!lastLog) return daysUntil === 0 ? now : nextMidnight
-      const readyAfterCd = new Date(lastLog.getTime() + cdHours * 3600000)
-      if (!isNaN(readyAfterCd.getTime()) && readyAfterCd > nextMidnight) {
-        nextMidnight.setTime(nextMidnight.getTime() + 7 * 86400000)
-      }
-      return nextMidnight > now ? nextMidnight : now
+      const targetDay = Number.isInteger(config.dayOfWeek) && Number(config.dayOfWeek) >= 0 && Number(config.dayOfWeek) <= 6 ? Number(config.dayOfWeek) : 0
+      const day = getUserDayOfWeek(now, tz)
+      const midnight = getUserMidnightToday(now, tz)
+      const nextOffset = (targetDay - day + 7) % 7
+      const mostRecentOffset = (day - targetDay + 7) % 7
+      const mostRecent = new Date(midnight.getTime() - mostRecentOffset * 86400000)
+      const next = new Date(midnight.getTime() + (nextOffset || 7) * 86400000)
+      // Tanpa log, hari yang sudah lewat dalam minggu ini tetap bisa dikerjakan.
+      // Jika hari target masih di depan dan belum ada log, tunggu hari itu.
+      if (!lastLog && targetDay > day && (!createdAt || createdAt > mostRecent)) return new Date(midnight.getTime() + nextOffset * 86400000)
+      if (!lastLog || lastLog < mostRecent) return now
+      // Hormati cooldown lama jika lebih panjang dari sisa minggu.
+      const cdHours = Number(config.cooldownHours) > 0 ? Number(config.cooldownHours) : 24
+      const cooldownEnd = new Date(lastLog.getTime() + cdHours * 3600000)
+      if (cooldownEnd > next) next.setTime(next.getTime() + 7 * 86400000)
+      return next
     }
 
     case 'jam_tertentu': {
-      const times: string[] = (config.times as string[]) || []
-      if (times.length === 0) return now
-      const userMidnight = getUserMidnightToday(now, tz)
-      const sorted = times.map(t => {
+      const times = Array.isArray(config.times) ? config.times : []
+      const minutes = [...new Set(times.filter((t): t is string => typeof t === 'string').map(t => t.trim()).filter(t => /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(t)).map(t => {
         const [h, m] = t.split(':').map(Number)
-        // userMidnight is midnight in user's TZ (expressed as UTC).
-        // Adding h hours + m minutes gives the correct UTC time.
-        return new Date(userMidnight.getTime() + h * 3600000 + m * 60000)
-      }).sort((a, b) => a.getTime() - b.getTime())
-      for (const t of sorted) { if (t > now) return t }
-      // All times today have passed → first time tomorrow
-      const tomorrow = sorted.length > 0 ? new Date(sorted[0].getTime() + 86400000) : new Date(now)
-      return isNaN(tomorrow.getTime()) ? now : tomorrow
+        return h * 60 + m
+      }))].sort((a, b) => a - b)
+      if (!minutes.length) return now
+      const midnight = getUserMidnightToday(now, tz)
+      const today = minutes.map(m => new Date(midnight.getTime() + m * 60000))
+      const passed = today.filter(t => t <= now)
+      const next = today.find(t => t > now) ?? new Date(today[0].getTime() + 86400000)
+      const latestSlot = passed.length ? passed[passed.length - 1] : new Date(today[today.length - 1].getTime() - 86400000)
+      if (!lastLog) return passed.length || (createdAt && createdAt <= latestSlot) ? now : today[0]
+      // Tetap siap setelah jam berlalu sampai dikerjakan; sekali per interval.
+      return lastLog < latestSlot ? now : next
     }
 
     default:
