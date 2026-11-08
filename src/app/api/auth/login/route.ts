@@ -6,6 +6,7 @@ import { setAuthCookie } from '@/lib/auth'
 import { clientIp, consumeRateLimit, resetRateLimit } from '@/lib/rate-limit'
 import { ApiError, handleApiError, parseBody } from '@/lib/api'
 import { loginSchema } from '@/lib/schemas'
+import { ensureEnvAdmin } from '@/lib/admin-bootstrap'
 
 // Rate limit berbasis database — lihat src/lib/rate-limit.ts untuk alasannya
 // (Map in-memory tidak berfungsi di serverless: tiap instance punya memori
@@ -31,6 +32,12 @@ export async function POST(req: Request) {
   try {
     const ip = clientIp(req)
     const { username, password } = await parseBody(req, loginSchema)
+
+    // Akun admin pemulihan dari ADMIN_USERNAME/ADMIN_PASSWORD (kalau diisi).
+    // Dipanggil sebelum pencarian user supaya percobaan login pertama setelah
+    // redeploy langsung berhasil. No-op kalau env var tidak diisi, dan tidak
+    // pernah melempar error sehingga tidak bisa menggagalkan login.
+    await ensureEnvAdmin()
 
     // Rate limit dua lapis: per username (target akun) dan per IP (satu sumber
     // yang menembak banyak username). Keduanya harus di bawah batas.
