@@ -4,8 +4,13 @@ import type { NextConfig } from 'next'
 // memakainya, jadi jangan dilepas ke pengguna akhir.
 const isDev = process.env.NODE_ENV !== 'production'
 
+// Vercel memakai builder Next.js-nya sendiri dan tidak membutuhkan bundel
+// standalone; memaksakannya di sana membuat output tidak seperti yang diharapkan
+// builder. Self-host tetap mendapat standalone seperti sebelumnya.
+const onVercel = process.env.VERCEL === '1'
+
 const nextConfig: NextConfig = {
-  output: 'standalone',
+  ...(onVercel ? {} : { output: 'standalone' as const }),
   reactStrictMode: true,
   poweredByHeader: false,
   async headers() {
