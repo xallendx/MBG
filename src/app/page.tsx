@@ -320,6 +320,13 @@ export default function MBGPage() {
   const [notifPermission, setNotifPermission] = useState<NotificationPermission>(typeof Notification !== 'undefined' ? Notification.permission : 'denied')
   const [pushSupported, setPushSupported] = useState(false)
   const [pushEnabled, setPushEnabled] = useState(false)
+  // null = belum tahu (jaringan gagal / belum diperiksa). false = server memang
+  // belum punya VAPID key. Dipakai supaya dialog Pengingat tidak meminta izin
+  // browser untuk sesuatu yang belum mungkin berhasil.
+  const [pushServerConfigured, setPushServerConfigured] = useState<boolean | null>(null)
+  // Service worker gagal aktif ≠ browser tidak mendukung. Sebelumnya keduanya
+  // dilaporkan sebagai "browser belum mendukung", yang menyesatkan di Chrome.
+  const [pushSetupFailed, setPushSetupFailed] = useState(false)
 
   // Register Service Worker + Push subscription
   const registerPushSubscription = useCallback(async (userId: string) => {
@@ -341,7 +348,7 @@ export default function MBGPage() {
       ])
       if (!active) {
         console.warn('Push: service worker belum aktif setelah 10 detik; notifikasi web dilewati.')
-        setPushSupported(false)
+        setPushSetupFailed(true)
         return
       }
 
@@ -365,8 +372,9 @@ export default function MBGPage() {
 
       // Get VAPID public key
       const vapidRes = await fetch('/api/push/vapid-key', { credentials: 'include' })
-      if (!vapidRes.ok) return
+      if (!vapidRes.ok) { setPushServerConfigured(false); return }
       const { publicKey } = await vapidRes.json()
+      setPushServerConfigured(Boolean(publicKey))
       if (!publicKey) return
 
       // Request notification permission first
@@ -393,7 +401,7 @@ export default function MBGPage() {
       setPushEnabled(true)
     } catch (err) {
       console.error('Push registration failed:', err)
-      setPushSupported(false)
+      setPushSetupFailed(true)
     }
   }, [])
 
@@ -1745,19 +1753,51 @@ export default function MBGPage() {
      izin apa pun, jadi pengguna harus tahu sendiri untuk menghapus lalu
      mencentang ulang. Di sini status ditampilkan apa adanya dan tiap jalur
      punya satu tombol yang benar-benar melakukan aksinya. */
-  const pushStatus: 'active' | 'need-permission' | 'blocked' | 'unsupported' | 'no-key' =
-    !pushSupported ? 'unsupported'
-      : notifPermission === 'denied' ? 'blocked'
-        : pushEnabled ? 'active'
-          : notifPermission === 'granted' ? 'no-key'
-            : 'need-permission'
+  // Kemampuan browser ditentukan dari fitur yang ada, BUKAN dari pushSupported.
+  // pushSupported baru bernilai true setelah pendaftaran berjalan, sehingga
+  // memakainya di sini sempat membuat Chrome dilaporkan "belum mendukung".
+  const pushCapable = typeof navigator !== 'undefined' && 'serviceWorker' in navigator
+    && typeof window !== 'undefined' && 'PushManager' in window
+  const pushStatus: 'active' | 'need-permission' | 'blocked' | 'unsupported' | 'no-key' | 'setup-failed' =
+    !pushCapable ? 'unsupported'
+      : pushSetupFailed ? 'setup-failed'
+        : notifPermission === 'denied' ? 'blocked'
+          : pushEnabled ? 'active'
+            // Dicek sebelum 'need-permission': tanpa kunci server, meminta izin
+            // browser hanya menghasilkan izin yang tidak berguna.
+            : pushServerConfigured === false ? 'no-key'
+              : notifPermission === 'granted' ? 'no-key'
+                : 'need-permission'
+
+  // Diperiksa saat dialog dibuka, bukan lewat effect, supaya tidak memanggil
+  // setState di dalam effect. Kegagalan jaringan dibiarkan null agar tidak
+  // menuduh server belum dikonfigurasi padahal cuma sedang offline.
+  const probePushConfig = async () => {
+    try {
+      const r = await fetch('/api/push/vapid-key', { credentials: 'include' })
+      if (!r.ok) { setPushServerConfigured(false); return }
+      const d = await r.json()
+      setPushServerConfigured(Boolean(d?.publicKey))
+    } catch { setPushServerConfigured(null) }
+  }
+
+  const openReminders = () => {
+    setDialogType('reminders')
+    // Izin bisa berubah lewat setelan browser sejak halaman dibuka.
+    if (typeof Notification !== 'undefined') setNotifPermission(Notification.permission)
+    void probePushConfig()
+  }
 
   const enablePushReminder = async () => {
     if (!authUser?.id) return
-    // Simpan preferensi dulu supaya server ikut mencatat pilihan pengguna.
-    try { await api('/api/settings', jsonOpts('PUT', { browserNotifEnabled: true })) } catch { /* lanjut: izin tetap diminta */ }
-    setFormBrowserNotif(true)
+    // Izin dulu, baru simpan preferensi. Versi sebelumnya menyimpan lebih dulu,
+    // sehingga kalau pengguna menolak, server tetap mencatat notifikasi aktif —
+    // persis keadaan menyesatkan yang ingin dihapus dialog ini.
     await requestNotifPermission()
+    const perm = typeof Notification !== 'undefined' ? Notification.permission : 'denied'
+    if (perm !== 'granted') return
+    try { await api('/api/settings', jsonOpts('PUT', { browserNotifEnabled: true })) } catch { /* izin sudah diberikan; lanjut */ }
+    setFormBrowserNotif(true)
     await registerPushSubscription(authUser.id)
     delayedFetch()
   }
@@ -2006,6 +2046,11 @@ export default function MBGPage() {
       onConfirm: async () => {
         cancelWorking()
         setBatchCompleting(null)
+        // Bar konfirmasi "sudah selesai?" milik akun yang sedang login. Tanpa
+        // ini id-nya bertahan sampai sesi berikutnya di perangkat yang sama.
+        setReturnPromptOpen(false)
+        setReturnTaskId(null)
+        returnTaskRef.current = null
         try { await api('/api/logout', { method: 'POST' }) } catch { /* server unreachable, proceed with local logout */ }
         setProfileMenuOpen(false)
         setConfirmData(null)
@@ -2997,7 +3042,7 @@ export default function MBGPage() {
                   <b>Biar tidak lupa mengerjakan</b>
                   Nyalakan pengingat supaya kamu dikabari saat tugas siap lagi — termasuk ketika aplikasi ditutup.
                 </div>
-                <button type="button" className="v3-btn v3-btn-primary" onClick={() => setDialogType('reminders')}>
+                <button type="button" className="v3-btn v3-btn-primary" onClick={openReminders}>
                   Nyalakan pengingat
                 </button>
                 <button type="button" className="v3-btn" onClick={dismissReminderNudge} aria-label="Tutup ajakan pengingat">
@@ -3304,7 +3349,7 @@ export default function MBGPage() {
             Alat
             {openMenu === 'tools' && (
               <div className="win95-dropdown" role="menu" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
-                <button type="button" role="menuitem" className="win95-dropdown-item" onClick={e => { e.stopPropagation(); setDialogType('reminders'); setOpenMenu(null) }}>🔔 Pengingat</button>
+                <button type="button" role="menuitem" className="win95-dropdown-item" onClick={e => { e.stopPropagation(); openReminders(); setOpenMenu(null) }}>🔔 Pengingat</button>
                 <button type="button" role="menuitem" className="win95-dropdown-item" onClick={e => { e.stopPropagation(); setDialogType('telegram'); setOpenMenu(null) }}>Telegram</button>
                 <button type="button" role="menuitem" className="win95-dropdown-item" onClick={e => { e.stopPropagation(); openSettings(); setOpenMenu(null) }}>Pengaturan</button>
                 <button type="button" role="menuitem" className="win95-dropdown-item" onClick={e => { e.stopPropagation(); setDialogType('templates'); fetchTemplates(); setOpenMenu(null) }}>📋 Template Task</button>
@@ -3350,8 +3395,15 @@ export default function MBGPage() {
               <button onClick={e => { e.currentTarget.closest('details')!.open = false; openAddProject() }}>📁 Buat proyek</button>
               <button onClick={e => { e.currentTarget.closest('details')!.open = false; fetchData(true) }}>🔄 Muat ulang</button>
               <button onClick={e => { e.currentTarget.closest('details')!.open = false; setDialogType('templates'); fetchTemplates() }}>📋 Template</button>
-              <button onClick={e => { e.currentTarget.closest('details')!.open = false; setDialogType('reminders') }}>🔔 Pengingat</button>
+              <button onClick={e => { e.currentTarget.closest('details')!.open = false; openReminders() }}>🔔 Pengingat</button>
               <button onClick={e => { e.currentTarget.closest('details')!.open = false; setDialogType('telegram') }}>📱 Telegram</button>
+              {/* Penyelamat data. Menubar disembunyikan di layar sentuh, jadi
+                  tanpa tiga item ini Export/Import tidak bisa dijangkau dari HP
+                  sama sekali. Wajib ada di menu yang tetap tampil. */}
+              <div className="toolbar-more-sep" role="separator" />
+              <button onClick={e => { e.currentTarget.closest('details')!.open = false; doExport() }}>💾 Export backup</button>
+              <button onClick={e => { e.currentTarget.closest('details')!.open = false; fileInputRef.current?.click() }}>📥 Import data</button>
+              <button onClick={e => { e.currentTarget.closest('details')!.open = false; openImportShare() }}>🔗 Import share code</button>
             </div>
           </details>
         </div>
@@ -3541,7 +3593,7 @@ export default function MBGPage() {
                     <div style={{ fontSize: 11, color: '#7a3d00', marginLeft: 20, marginTop: 4, lineHeight: 1.5 }}>
                       Centang di atas baru menyimpan pilihan — push belum aktif.
                       <button type="button" className="win95-btn" style={{ display: 'block', marginTop: 6, minHeight: 36 }}
-                        onClick={() => setDialogType('reminders')}>
+                        onClick={openReminders}>
                         Aktifkan sekarang
                       </button>
                     </div>
@@ -3646,10 +3698,16 @@ export default function MBGPage() {
                   </div>
                 ) : pushStatus === 'unsupported' ? (
                   <div className="reminder-warn">Browser ini belum mendukung. Coba Chrome atau Edge, atau pakai Telegram di bawah.</div>
+                ) : pushStatus === 'setup-failed' ? (
+                  <div className="reminder-warn">
+                    Notifikasi gagal disiapkan di perangkat ini. Coba muat ulang halaman.
+                    Kalau masih gagal, pakai Telegram di bawah — itu tidak bergantung ke sini.
+                  </div>
                 ) : pushStatus === 'no-key' ? (
                   <div className="reminder-warn">
-                    Izin sudah diberikan, tapi server belum dikonfigurasi untuk push.
-                    Gunakan Telegram di bawah untuk sekarang.
+                    Server belum dikonfigurasi untuk push, jadi notifikasi perangkat
+                    belum bisa dipakai di sini. Pakai Telegram di bawah — itu tetap jalan.
+                    {notifPermission === 'granted' && ' Izin di perangkatmu sudah beres; tinggal servernya.'}
                   </div>
                 ) : (
                   <button type="button" className="win95-btn primary reminder-action" onClick={enablePushReminder}>

@@ -2597,8 +2597,13 @@ button:disabled {
    Yang dipangkas adalah hiasan (menubar, hint, jarak), BUKAN area sentuh:
    semua tombol tetap >= 44px. */
 @media (pointer: coarse) {
-  /* Menubar File/Lihat/Alat jarang dipakai harian; diakses lewat toolbar.
-     Tetap ada di DOM dan tetap bisa dijangkau keyboard/screen reader. */
+  /* Menubar File/Lihat/Alat jarang dipakai harian; diakses lewat toolbar dan
+     menu "Lainnya". CATATAN: display:none juga menghapusnya dari tab order dan
+     accessibility tree, jadi setiap aksi di menubar HARUS ada padanannya di
+     toolbar/Lainnya/menu profil. Saat audit, Export backup, Import data, dan
+     Import share code sempat hilang dari HP karena ini — sudah ditambahkan
+     ke menu "Lainnya". Kalau menambah item menubar baru, tambahkan juga di
+     sana, atau jangan sembunyikan menubar. */
   .win95-menubar { display: none; }
 
   /* Judul jendela dipadatkan, tapi tombolnya TETAP 44px agar mudah ditekan. */
@@ -2685,4 +2690,42 @@ button:disabled {
     display: grid;
     place-items: center;
   }
+}
+
+/* Pemisah grup di menu "Lainnya": aksi data dipisah dari aksi tampilan. */
+.toolbar-more-sep {
+  height: 2px;
+  margin: 4px 2px;
+  border-top: 1px solid var(--win95-dark);
+  border-bottom: 1px solid var(--win95-white);
+}
+
+/* ── Hasil audit mendalam: tiga perbaikan yang terlewat pengukuran 390px ───── */
+
+/* 1. Menu "Lainnya" bisa lebih tinggi dari layar. Setelah Export/Import
+      ditambahkan, menunya jadi 372px — di HP landscape (tinggi 390px) item
+      terakhir justru keluar layar dan tidak bisa ditekan. Batasi tingginya
+      dan buat bisa digulir. */
+.toolbar-more-menu {
+  max-height: min(70vh, 420px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+@media (pointer: coarse) {
+  /* 2. Sidebar hanya muncul di layar lebar, jadi audit 390px tidak pernah
+        melihat tombol ini: "+ Proyek baru" ternyata 28px di tablet. */
+  .v3-side-add { min-height: var(--touch-min); padding: 10px 8px; }
+}
+
+/* 3. Layar sentuh yang pendek (HP landscape): chrome menghabiskan hampir
+      semua tinggi, daftar tinggal 80px. Statusbar hanya mengulang info yang
+      sudah ada di sidebar, jadi disembunyikan; bar filter dipadatkan.
+      Tombol tidak diperkecil — tetap 44px. */
+@media (pointer: coarse) and (max-height: 500px) {
+  .win95-statusbar { display: none; }
+  .v3-filterbar { padding-top: 3px; padding-bottom: 3px; gap: 4px; }
+  .selection-entry { padding-top: 2px; padding-bottom: 2px; }
+  .selection-entry > span { display: none; }
+  .v3-colhead { padding-top: 1px; padding-bottom: 1px; }
 }
