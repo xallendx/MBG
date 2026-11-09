@@ -2077,8 +2077,16 @@ export default function MBGPage() {
     setAuthError('')
     try {
       const res = await api('/api/auth/login', jsonOpts('POST', { username: loginUsername.trim(), password: loginPassword }))
-      if (!res.ok) { setAuthError('Login gagal. Periksa username dan password.'); return }
-      const data = await res.json()
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        // Sebelumnya pesan asli server dibuang dan selalu diganti "Periksa
+        // username dan password" — padahal penyebabnya bisa database atau
+        // rate limit, sehingga pemilik instalasi menghabiskan waktu menebak
+        // password yang sebenarnya sudah benar. Untuk 401 server tetap menjawab
+        // generik agar tidak membocorkan apakah sebuah username terdaftar.
+        setAuthError(data.error || `Login gagal (HTTP ${res.status}). Coba lagi atau hubungi admin.`)
+        return
+      }
       if (data.success) {
         setAuthenticated(true)
         setAuthUser(data.user)
@@ -2113,7 +2121,7 @@ export default function MBGPage() {
       if (!res.ok) {
         // Tampilkan pesan asli dari server (mis. "Kode undangan sudah digunakan")
         // supaya user tahu apa yang salah, bukan "coba lagi" yang tidak informatif.
-        setAuthError(data.error || 'Registrasi gagal. Silakan coba lagi.')
+        setAuthError(data.error || `Registrasi gagal (HTTP ${res.status}). Coba lagi atau hubungi admin.`)
         return
       }
       if (data.success) {

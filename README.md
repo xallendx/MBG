@@ -44,9 +44,14 @@ cp .env.example .env
 # Terapkan migration (BUKAN db push — lihat catatan di bawah)
 npm run db:migrate:deploy
 
-# Opsional: data contoh untuk development
+# Opsional: data contoh untuk DEVELOPMENT LOKAL saja
 npm run db:seed:demo          # membuat admin1 / admin123 + 11 task demo
 ```
+
+> **`admin1` / `admin123` bukan akun bawaan aplikasi.** Kredensial itu hanya ada
+> kalau kamu menjalankan `db:seed:demo` sendiri terhadap database yang dituju.
+> Deploy ke Vercel **tidak** menjalankannya, jadi jangan berharap bisa login dengan
+> kombinasi itu di situs produksi.
 
 > **Penting:** jangan pakai `db:push` untuk database produksi. Folder
 > `prisma/migrations/` sekarang sudah ada, dan `db:push` bisa mengubah schema
@@ -75,6 +80,31 @@ yang bisa mendaftar. Kode dibuat oleh admin di **Alat → Panel Admin → Kode U
 
 > Kalau kamu melihat kode undangan seperti `MBGADMIN` di dokumentasi lama, itu
 > hanya contoh. Kode asli hanya ada di database instalasimu sendiri.
+
+**Tidak ada password admin bawaan.** Aplikasi tidak menanam kredensial apa pun
+di dalam kode. Akun hanya lahir dari pendaftaran (bootstrap/undangan) atau dari
+fitur pemulihan di bawah.
+
+### Tidak bisa masuk sama sekali? (admin pemulihan)
+
+Kalau database sudah berisi akun yang tidak kamu ketahui passwordnya, kamu
+tidak bisa membuat kode undangan karena Panel Admin butuh login. Untuk memutus
+lingkaran itu, isi dua environment variable di dashboard hosting:
+
+| Variabel | Isi |
+|---|---|
+| `ADMIN_USERNAME` | username baru, 3–50 karakter, huruf/angka/underscore |
+| `ADMIN_PASSWORD` | password pilihanmu, 6–128 karakter |
+
+Lalu **redeploy** dan login memakai nilai tersebut. Akun dibuat otomatis sebagai
+**ADMIN** pada percobaan login pertama — tanpa membuka SQL Editor.
+
+- Username yang **sudah ada tidak disentuh**. Pakai username baru.
+- Password di-hash bcrypt dan tidak pernah ditulis ke log.
+- **Hapus kedua variabel itu setelah berhasil masuk.**
+- Terkunci total dan perlu menimpa password akun yang sudah ada? Tambahkan
+  `ADMIN_ALLOW_PASSWORD_RESET="true"` sesaat, login, lalu hapus lagi. Tanpa
+  flag itu, password akun aktif tidak akan pernah ditimpa.
 
 ## Deploy ke Vercel
 
