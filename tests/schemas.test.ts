@@ -92,6 +92,22 @@ describe('taskCreateSchema', () => {
     expect(r.success && r.data.scheduleConfig).toEqual({})
   })
 
+  it('clientRequestId opsional untuk klien lama', () => {
+    const r = taskCreateSchema.safeParse({ name: 'A' })
+    expect(r.success && r.data.clientRequestId).toBeUndefined()
+  })
+
+  it('clientRequestId UUID valid diterima untuk retry idempoten', () => {
+    const r = taskCreateSchema.safeParse({ name: 'A', clientRequestId: '11111111-1111-4111-8111-111111111111' })
+    expect(r.success && r.data.clientRequestId).toBe('11111111-1111-4111-8111-111111111111')
+  })
+
+  it('clientRequestId bukan UUID ditolak dengan pesan Indonesia', () => {
+    const r = taskCreateSchema.safeParse({ name: 'A', clientRequestId: 'kunci-sembarang' })
+    expect(r.success).toBe(false)
+    if (!r.success) expect(r.error.issues[0].message).toContain('Kunci percobaan simpan tidak valid')
+  })
+
   it('menolak nama lebih dari 200 karakter', () => {
     const r = taskCreateSchema.safeParse({ name: 'x'.repeat(201) })
     expect(r.success).toBe(false)

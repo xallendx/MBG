@@ -106,6 +106,9 @@ export const taskCreateSchema = z.object({
   projectId: z.string({ error: 'projectId harus berupa teks' }).max(64).nullish().transform(v => (v ? v : null)),
   pinned: z.boolean({ error: 'pinned harus true/false' }).default(false),
   priority: z.enum(PRIORITIES, { error: 'Priority harus high, medium, atau low' }).default('medium'),
+  // Kunci percobaan simpan dari browser. Retry dengan kunci yang sama tidak
+  // membuat tugas kedua; lihat POST /api/tasks. Opsional agar klien lama tetap jalan.
+  clientRequestId: z.uuid({ error: 'Kunci percobaan simpan tidak valid' }).optional(),
 })
 
 export const taskUpdateSchema = z.object({

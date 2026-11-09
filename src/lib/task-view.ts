@@ -59,3 +59,32 @@ export function cooldownIcon(ms: number | null | undefined): string {
 export function cooldownColor(ms: number | null | undefined): string {
   return isUrgentCooldown(ms) ? '#CC0000' : 'var(--win95-cd)'
 }
+
+/** Nilai filter sidebar untuk tugas tanpa proyek (bukan id proyek asli). */
+export const NO_PROJECT_FILTER = '__no_project__'
+
+/**
+ * Proyek awal saat menambah tugas dari filter yang sedang aktif.
+ * Sentinel "tanpa proyek", kosong, dan null semuanya berarti tugas mandiri —
+ * jangan pernah dikirim ke API sebagai projectId.
+ */
+export function projectIdForNewTask(filter: string | null | undefined): string | null {
+  if (!filter || filter === NO_PROJECT_FILTER) return null
+  return filter
+}
+
+/**
+ * Filter proyek setelah tugas baru disimpan.
+ * - Tugas masuk proyek → fokus ke proyek itu (tambah dari menu proyek di HP
+ *   tidak melempar pengguna kembali ke "semua tugas").
+ * - Tugas mandiri → pertahankan filter HANYA kalau sedang memfilter
+ *   "Tanpa proyek"; selain itu bersihkan supaya tugas barunya terlihat.
+ */
+export function projectFilterAfterAdd(
+  filter: string | null | undefined,
+  savedProjectId: string | null | undefined,
+): string | null {
+  const pid = projectIdForNewTask(savedProjectId)
+  if (pid) return pid
+  return filter === NO_PROJECT_FILTER ? NO_PROJECT_FILTER : null
+}
