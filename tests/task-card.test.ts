@@ -59,6 +59,26 @@ describe('taskCardActions — satu aksi utama per kartu', () => {
   it('link berbahaya pada tugas menunggu tidak memunculkan tombol link', () => {
     expect(taskCardActions(task({ status: 'cooldown', link: 'javascript:alert(1)' }), false).showLink).toBe(false)
   })
+
+  it('tugas selesai punya jalan batalkan selesai — tugas sekali tidak bisa di-reset', () => {
+    const a = taskCardActions(task({ status: 'selesai' }), false)
+    expect(a.showUndo).toBe(true)
+  })
+
+  it('tugas selesai berlink tetap menawarkan batalkan selesai dan buka link', () => {
+    const a = taskCardActions(task({ status: 'selesai', link: 'https://example.com' }), false)
+    expect(a.showUndo).toBe(true)
+    expect(a.showLink).toBe(true)
+  })
+
+  it('tugas siap tidak menawarkan batalkan selesai', () => {
+    expect(taskCardActions(task(), false).showUndo).toBe(false)
+    expect(taskCardActions(task(), true).showUndo).toBe(false)
+  })
+
+  it('tugas menunggu memakai Reset, bukan batalkan selesai', () => {
+    expect(taskCardActions(task({ status: 'cooldown' }), false).showUndo).toBe(false)
+  })
 })
 
 describe('taskCardStatusText', () => {

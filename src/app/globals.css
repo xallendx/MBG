@@ -2347,6 +2347,11 @@ button:disabled {
   .task-form-dialog .win95-input, .task-form-dialog .win95-select { min-height: 44px; }
   .task-form-dialog .win95-btn { min-height: 44px; }
   .task-form-dialog .win95-dialog-footer { position: sticky; bottom: 0; background: var(--win95-bg); border-top: 1px solid #808080; }
+  /* Dialog panjang (mis. Pengaturan) punya isi 1000px lebih pada layar 844px,
+     jadi tombol OK/Batal berada di bawah layar dan pengguna harus menggulir
+     dulu untuk menemukannya. Footer menempel di dasar dialog supaya tombol
+     simpan/batal selalu terlihat, sama seperti form tugas. */
+  .win95-dialog > .win95-dialog-footer { position: sticky; bottom: 0; background: var(--win95-bg); border-top: 1px solid #808080; z-index: 1; }
 }
 .task-more { margin: 9px 0; border: 1px solid #808080; padding: 8px; }
 .task-more summary { font-size: 12px; font-weight: bold; cursor: pointer; }
@@ -2625,10 +2630,14 @@ button:disabled {
   .selection-entry { padding: 3px 6px; }
   .v3-hint { display: none; }
 
-  /* Tab filter jadi satu baris yang bisa digeser, bukan membungkus 2 baris. */
-  .v3-seg { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
-  .v3-seg::-webkit-scrollbar { display: none; }
-  .v3-seg button { flex: 0 0 auto; padding: 6px 10px; }
+  /* Empat tab harus terlihat sekaligus. Sebelumnya baris ini jadi strip yang
+     bisa digeser dengan scrollbar disembunyikan: di layar 390px tab "Selesai"
+     berada di luar layar (kanan 429px) tanpa petunjuk apa pun bahwa ia ada,
+     jadi filter Selesai praktis tidak bisa dipakai di HP. Grid 4 kolom + ikon
+     disembunyikan membuat semuanya muat tanpa mengorbankan tinggi sentuh. */
+  .v3-seg { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 3px; }
+  .v3-seg button { min-width: 0; padding: 6px 2px; font-size: 11px; }
+  .v3-seg .v3-tab-icon { display: none; }
   .v3-filterbar { gap: 4px; padding: 4px 6px; }
 
   /* Baris tugas: nama tidak perlu setinggi tombol karena SELURUH baris sudah
@@ -2991,4 +3000,19 @@ button:disabled {
   border: 2px solid;
   border-color: var(--win95-white) #808080 #808080 var(--win95-white);
   border-left: 5px solid #000080;
+}
+
+/* ── Tambah tugas di proyek yang sedang dibuka ────────────────────────────────
+   Sebelumnya menambah tugas ke satu proyek hanya lewat toolbar yang labelnya
+   berubah, atau menu klik-kanan nama proyek. Keduanya tidak terlihat sebagai
+   "tempat menambah tugas", jadi dibuat tombol selebar daftar di bawah kartu. */
+.v3-add-in-project {
+  display: block; width: 100%;
+  margin: 2px 0 8px; padding: 10px 12px;
+  min-height: 44px;
+  font-size: 13px; font-weight: bold; color: #005500;
+  text-align: center; white-space: normal; overflow-wrap: anywhere;
+}
+@media (pointer: coarse) {
+  .v3-add-in-project { min-height: 48px; font-size: 14px; }
 }

@@ -5,8 +5,10 @@ import { isSafeHttpUrl } from '@/lib/safe-url'
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { scheduleInputError } from '@/lib/schedule-input'
 import { NO_PROJECT_FILTER, PRIORITY_DOT, PRIORITY_LABEL, SCHEDULE_LABELS, cooldownColor, cooldownIcon, priorityDot, priorityLabel, projectFilterAfterAdd, projectIdForNewTask, scheduleLabel } from '@/lib/task-view'
-import { canonicalJson, cloneTaskDefaults, emptyTaskForm, isTaskFormDirty, newTaskRequestId, readTaskDefaults, rememberTaskDefaults, taskDefaultsKey, taskFormSnapshot, type TaskFormDefaults, type TaskFormSnapshot } from '@/lib/task-form'
+import { attemptIsSettled, canonicalJson, cloneTaskDefaults, emptyTaskForm, isTaskFormDirty, nextSaveAttempt, readTaskDefaults, rememberTaskDefaults, taskDefaultsKey, taskFormSnapshot, type SaveAttempt, type TaskFormDefaults, type TaskFormSnapshot } from '@/lib/task-form'
 import { showProjectOnCard, taskCardActions, taskCardStatusText } from '@/lib/task-card'
+import { activeOnly, countDone, countForTab, tasksForTab } from '@/lib/task-counts'
+import { refreshCachedTasks } from '@/lib/task-cache'
 
 /* ===== Types ===== */
 interface Note {
@@ -244,7 +246,7 @@ export default function MBGPage() {
   // Opsi A: satu tugas = satu konfirmasi server. Ref mengunci klik ganda bahkan
   // sebelum React sempat merender ulang tombol disabled.
   const savingTaskRef = useRef(false)
-  const taskRequestRef = useRef<string | null>(null)
+  const taskRequestRef = useRef<SaveAttempt | null>(null)
   const taskDefaultsRef = useRef(new Map<string, TaskFormDefaults>())
   const taskDraftBaselineRef = useRef('')
   const taskDialogRef = useRef<HTMLDivElement>(null)
@@ -545,10 +547,10 @@ export default function MBGPage() {
       // Cache older than 24h is considered stale — skip
       if (Date.now() - cache.ts > 86400000) return false
       if (cache.tasks) {
-        const mapped = (cache.tasks as Task[]).map((t: Task) => ({
-          ...t,
-          cooldownMs: t.nextReadyAt ? Math.max(0, new Date(t.nextReadyAt).getTime() - Date.now()) : 0
-        }))
+        // Status ikut dihitung ulang, bukan hanya cooldownMs: cache berumur
+        // beberapa jam bisa masih menulis "Menunggu 5j 0m" untuk tugas yang sudah
+        // siap, dan tombol kartu jadi "Lihat detail" bukan "Buka link".
+        const mapped = refreshCachedTasks(cache.tasks as Task[])
         tasksCacheRef.current = mapped
         setTasks(mapped)
       }
@@ -1212,12 +1214,26 @@ export default function MBGPage() {
     finally { completingIdsRef.current.delete(id); setCompletingIds(p => { const n = new Set(p); n.delete(id); return n }) }
   }
 
-  /** Undo targets the exact log created by the corresponding action. */
-  const undoComplete = async (id: string, logId: string) => {
+  /**
+   * Batalkan satu penyelesaian.
+   *
+   * Dengan `logId` (toast Undo) yang dibatalkan tepat log dari aksi tersebut.
+   * Tanpa `logId` server memakai log terbaru — dipakai tombol "Batalkan selesai"
+   * pada tugas yang sudah selesai, karena tugas "Sekali" tidak punya Reset dan
+   * toast Undo-nya sudah lama hilang.
+   */
+  const undoComplete = async (id: string, logId?: string | null) => {
+    const previous = tasks.find(t => t.id === id)
+    // Umpan balik langsung: tugas kembali aktif tanpa menunggu refetch.
+    setTasks(prev => prev.map(t => t.id === id
+      ? { ...t, status: 'siap' as const, nextReadyAt: null, cooldownRemaining: '', cooldownMs: 0 }
+      : t))
+    const restore = () => { if (previous) setTasks(prev => prev.map(t => t.id === id ? previous : t)) }
     try {
-      const res = await api(`/api/tasks/${id}/undo`, jsonOpts('POST', { logId }))
+      const res = await api(`/api/tasks/${id}/undo`, logId ? jsonOpts('POST', { logId }) : { method: 'POST' })
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
+        restore()
         toast(data.error || 'Tidak ada penyelesaian untuk dibatalkan', 'error')
         return
       }
@@ -1225,6 +1241,7 @@ export default function MBGPage() {
       toast('Penyelesaian dibatalkan', 'info')
       delayedFetch()
     } catch {
+      restore()
       toast('Gagal membatalkan (jaringan)', 'error')
     }
   }
@@ -1321,6 +1338,9 @@ export default function MBGPage() {
     catch { lastWriteTime.current = 0; toast('Gagal mereset task', 'error'); delayedFetch() }
   }
 
+  /** Dipakai kartu, menu ⋯, dan dialog detail untuk tugas berstatus selesai. */
+  const undoLastComplete = (t: Task) => undoComplete(t.id, null)
+
   const reset = (id: string) => {
     setConfirmData({
       title: 'Hapus riwayat dan reset', message: 'Yakin reset task ini? Seluruh riwayat penyelesaiannya akan dihapus dan tidak dapat dibatalkan.',
@@ -1413,18 +1433,28 @@ export default function MBGPage() {
       scheduleType: form.scheduleType, scheduleConfig: JSON.parse(canonicalJson(form.scheduleConfig)) as Record<string, unknown>,
       projectId: form.projectId, priority: form.priority,
     }
-    if (isAdd && !taskRequestRef.current) taskRequestRef.current = newTaskRequestId()
+    // Isi sama → kunci sama (retry tidak menggandakan). Isi berubah setelah
+    // percobaan gagal → percobaan baru, supaya tidak terkunci di penolakan 409.
+    if (isAdd) taskRequestRef.current = nextSaveAttempt(taskRequestRef.current, canonicalJson(payload))
     setTaskFormError('')
     savingTaskRef.current = true
     setSavingTask(true)
     try {
       const res = await api(isAdd ? '/api/tasks' : `/api/tasks/${editId}`, jsonOpts(isAdd ? 'POST' : 'PUT', {
-        ...payload, ...(isAdd ? { clientRequestId: taskRequestRef.current } : {}),
+        ...payload, ...(isAdd ? { clientRequestId: taskRequestRef.current?.key } : {}),
       }))
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
+        if (attemptIsSettled(err.code)) {
+          // Percobaan sebelumnya ternyata sudah tersimpan. Lepas kuncinya supaya
+          // tombol Simpan tidak menolak terus dengan pesan yang sama.
+          taskRequestRef.current = null
+          setTaskFormError('Tugas dari percobaan sebelumnya sudah tersimpan (koneksi mungkin terputus). Daftar sedang diperbarui — periksa dulu. Tekan Simpan lagi hanya kalau ini memang tugas yang berbeda.')
+          lastWriteTime.current = 0
+          void fetchData(false, true)
+          return
+        }
         setTaskFormError(err.error || 'Tugas tidak tersimpan. Periksa data dan coba lagi.')
-        if (err.code === 'REQUEST_PAYLOAD_CONFLICT') { lastWriteTime.current = 0; void fetchData(false, true) }
         return
       }
       // Server sudah konfirmasi. Kunci percobaan selesai; tugas berikutnya wajib
@@ -1649,17 +1679,21 @@ export default function MBGPage() {
     return projects
   }, [projects, projectSort])
 
-  /* ===== getActiveTasks: exclude archived sekali/tanggal_spesifik from active counts ===== */
+  /* ===== getActiveTasks: exclude archived sekali/tanggal_spesifik from active counts =====
+     Aturannya sekarang tinggal di lib/task-counts supaya daftar, angka tab, dan
+     ringkasan memakai definisi arsip yang sama. */
   // Must be defined BEFORE useMemo that references it (TDZ fix)
-  const getActiveTasks = (pt: Task[]) => pt.filter(t => !(t.status === 'selesai' && (t.scheduleType === 'sekali' || t.scheduleType === 'tanggal_spesifik')))
+  const getActiveTasks = (pt: Task[]) => activeOnly(pt)
 
   /* ===== Memoized active task counts (performance — avoid re-computing on every render) ===== */
   const activeTasks = useMemo(() => getActiveTasks(tasks), [tasks])
   const totalSiap = useMemo(() => activeTasks.filter(t => t.status === 'siap').length, [activeTasks])
   const totalCd = useMemo(() => activeTasks.filter(t => t.status === 'cooldown').length, [activeTasks])
-  const totalDone = useMemo(() => tasks.filter(t => t.status === 'selesai').length, [tasks])
-  const activeDone = useMemo(() => activeTasks.filter(t => t.status === 'selesai').length, [activeTasks])
-  const totalArchived = useMemo(() => tasks.filter(t => t.status === 'selesai' && (t.scheduleType === 'sekali' || t.scheduleType === 'tanggal_spesifik')).length, [tasks])
+  // Ringkasan "Selesai" memakai hitungan yang sama dengan tab Selesai: semua
+  // yang sudah dikerjakan, termasuk arsip tugas sekali. Dulu ringkasan hanya
+  // menghitung tugas aktif, jadi tertulis 0 walau tab Selesai berisi banyak.
+  const totalDone = useMemo(() => countDone(tasks), [tasks])
+  const totalArchived = useMemo(() => tasks.length - activeOnly(tasks).length, [tasks])
 
   /* ===== Fix B8: Shared sort utility — pinned first, then priority ===== */
   const sortTasksByPriorityAndPin = (list: Task[]) => {
@@ -1731,8 +1765,16 @@ export default function MBGPage() {
   }
 
   const delProject = (p: Project) => {
+    // Sebutkan jumlahnya, termasuk arsip: tugas sekali yang sudah selesai tidak
+    // terlihat di daftar, jadi tanpa angka ini pengguna bisa menghapus puluhan
+    // riwayat sambil mengira proyeknya kosong.
+    const inside = tasks.filter(t => t.project?.id === p.id)
+    const archived = inside.length - getActiveTasks(inside).length
+    const rincian = inside.length === 0
+      ? 'Proyek ini belum punya tugas.'
+      : `${getActiveTasks(inside).length} tugas aktif${archived ? ` + ${archived} arsip` : ''} beserta riwayatnya ikut terhapus.`
     setConfirmData({
-      title: 'Hapus Project', message: `Hapus project "${p.name}"? Semua task di dalamnya juga ikut terhapus.`,
+      title: 'Hapus Project', message: `Hapus project "${p.name}"? ${rincian}`,
       onConfirm: async () => {
         setConfirmLoading(true)
         // Optimistic delete FIRST — prevent sync from re-adding it
@@ -2361,13 +2403,6 @@ export default function MBGPage() {
   const openSettings = () => { const s = settings as Record<string, unknown>; setFormTimezone(['WIB', 'WITA', 'WIT'].includes(s.timezone as string) ? (s.timezone as string) : 'WIB'); setFormTimeFormat(s.timeFormat === '12' ? '12' : '24'); setFormAutoExpandSiap(s.autoExpandSiap !== false); setFormAutoCompleteLink(s.autoCompleteLink === true); setFormTelegramNotif(s.telegramNotifEnabled !== false); setFormBrowserNotif(s.browserNotifEnabled !== false); setFormNotifyBeforeMin((s.notifyBeforeCooldownMin as number) || 5); setFormAudioAlertEnabled(s.audioAlertEnabled !== false); setDialogType('settings') }
 
   /* ===== Folder toggle ===== */
-  const toggleFolder = (projectId: string) => {
-    setExpandedProjects(prev => {
-      const n = new Set(prev)
-      if (n.has(projectId)) n.delete(projectId); else n.add(projectId)
-      return n
-    })
-  }
 
   /* ===== Project stats helper (excludes archived sekali from active counts) ===== */
   const getProjectStats = (projectId: string) => {
@@ -2810,9 +2845,6 @@ export default function MBGPage() {
     ? (dashFilterProject === '__no_project__' ? tasks.filter(t => !t.project) : tasks.filter(t => t.project?.id === dashFilterProject))
     : tasks
 
-  const statusMatch = (t: Task) =>
-    activeTab === 'all' ? true : t.status === activeTab
-
   const searchMatch = (t: Task) => {
     const q = debouncedSearch.trim().toLowerCase()
     if (!q) return true
@@ -2824,16 +2856,18 @@ export default function MBGPage() {
     )
   }
 
-  const basePool = activeTab === 'selesai' ? listPool : getActiveTasks(listPool)
-  const visibleTasks = sortTasksByPriorityAndPin(basePool.filter(t => statusMatch(t) && searchMatch(t)))
+  // Daftar dan angka tab memanggil fungsi yang sama (tasksForTab/countForTab)
+  // supaya tidak mungkin lagi berbeda — dulu di dalam proyek tab "Semua (3)"
+  // padahal kartunya cuma 2 karena tugas sekali yang sudah selesai masih
+  // dihitung tapi tidak ditampilkan.
+  const visibleTasks = sortTasksByPriorityAndPin(tasksForTab(listPool, activeTab).filter(searchMatch))
 
-  const countIn = (status: 'siap' | 'cooldown' | 'selesai') =>
-    (status === 'selesai' ? listPool : getActiveTasks(listPool)).filter(t => t.status === status && searchMatch(t)).length
+  const countIn = (status: 'siap' | 'cooldown' | 'selesai') => countForTab(listPool, status, searchMatch)
 
   // Catatan: sengaja BUKAN useMemo — fungsi render ini dipanggil kondisional
   // (bergantung viewMode), jadi memakai hook di dalamnya melanggar aturan hooks
   // dan pernah membuat aplikasi berhenti di layar "Memuat data...".
-  const countAll = (dashFilterProject ? listPool : activeTasks).filter(t => searchMatch(t)).length
+  const countAll = countForTab(listPool, 'all', searchMatch)
 
   /** Satu baris task: nama + meta di kiri, status & aksi di kanan. */
   const renderTaskRow = (t: Task) => {
@@ -3037,7 +3071,7 @@ export default function MBGPage() {
             </button>
           </div>
 
-          {(actions.showComplete || actions.showLink) && (
+          {(actions.showComplete || actions.showLink || actions.showUndo) && (
             <div className="v3-task-card-act-row">
               {actions.showComplete && (
                 <button className="v3-btn v3-card-secondary" disabled={loading} title="Tandai selesai" onClick={() => complete(t.id)}>
@@ -3047,6 +3081,11 @@ export default function MBGPage() {
               {actions.showLink && (
                 <button className="v3-btn v3-card-secondary" title="Buka link tanpa menyelesaikan tugas" onClick={() => openTaskLink(t)}>
                   🔗 Buka link
+                </button>
+              )}
+              {actions.showUndo && (
+                <button className="v3-btn v3-card-secondary" title="Kembalikan tugas ini menjadi belum dikerjakan" onClick={() => undoLastComplete(t)}>
+                  ↩ Batalkan selesai
                 </button>
               )}
             </div>
@@ -3110,7 +3149,7 @@ export default function MBGPage() {
           <div className="v3-side-title">RINGKASAN</div>
           <div className="v3-side-stat"><span>Bisa dikerjakan</span><b style={{ color: 'var(--win95-siap)' }}>{totalSiap}</b></div>
           <div className="v3-side-stat"><span>Menunggu</span><b style={{ color: '#6b6b00' }}>{totalCd}</b></div>
-          <div className="v3-side-stat"><span>Selesai</span><b>{activeDone}</b></div>
+          <div className="v3-side-stat"><span>Selesai</span><b>{totalDone}</b></div>
         </aside>}
 
         {/* ── Area utama ──────────────────────────────────────────────── */}
@@ -3121,13 +3160,13 @@ export default function MBGPage() {
                 Semua <span className="v3-count">({countAll})</span>
               </button>
               <button aria-pressed={activeTab === 'siap'} onClick={() => { clearBulk(); setActiveTab('siap') }}>
-                ✓ Siap <span className="v3-count">({countIn('siap')})</span>
+                <span className="v3-tab-icon" aria-hidden="true">✓ </span>Siap <span className="v3-count">({countIn('siap')})</span>
               </button>
               <button aria-pressed={activeTab === 'cooldown'} onClick={() => { clearBulk(); setActiveTab('cooldown') }}>
-                ⏳ Menunggu <span className="v3-count">({countIn('cooldown')})</span>
+                <span className="v3-tab-icon" aria-hidden="true">⏳ </span>Menunggu <span className="v3-count">({countIn('cooldown')})</span>
               </button>
               <button aria-pressed={activeTab === 'selesai'} onClick={() => { clearBulk(); setActiveTab('selesai') }}>
-                ✔ Selesai <span className="v3-count">({countIn('selesai')})</span>
+                <span className="v3-tab-icon" aria-hidden="true">✔ </span>Selesai <span className="v3-count">({countIn('selesai')})</span>
               </button>
             </div>
             <input
@@ -3229,6 +3268,16 @@ export default function MBGPage() {
                 })}
               </>
             )}
+            {/* Jalan menambah tugas ke proyek yang sedang dibuka. Sebelumnya
+                hanya ada di toolbar (labelnya berubah jadi "+ Tugas di X") dan
+                di menu klik-kanan/tekan-lama nama proyek — dua-duanya mudah
+                terlewat, terutama di HP. */}
+            {dashFilterProject && (
+              <button className="v3-btn v3-add-in-project" onClick={openAddForCurrentFilter}>
+                ＋ Tambah tugas di {dashFilterProject === NO_PROJECT_FILTER ? 'Tanpa proyek' : (addToolbarProject?.name ?? 'proyek ini')}
+              </button>
+            )}
+
             {/* Muncul hanya setelah pengguna punya tugas, dan hanya kalau belum
                 ada pengingat yang aktif. Tidak muncul lagi setelah ditutup. */}
             {tasks.length > 0 && !reminderNudgeHidden && !telegramLinked && !pushEnabled && (
@@ -3261,9 +3310,12 @@ export default function MBGPage() {
    * difilter untukmu (siap sekarang / cooldown terdekat / terakhir selesai).
    */
   const renderMonitor = () => {
-    const pctDone = activeTasks.length > 0 ? Math.min(100, Math.round((activeDone / activeTasks.length) * 100)) : 0
-    const pctCd = activeTasks.length > 0 ? Math.min(100 - pctDone, Math.round((totalCd / activeTasks.length) * 100)) : 0
-    const pctSiap = activeTasks.length > 0 ? Math.min(100 - pctDone - pctCd, Math.round((totalSiap / activeTasks.length) * 100)) : 0
+    // Progres ini komposisi tugas AKTIF. Tugas yang dikerjakan tidak tinggal di
+    // situ: tugas sekali pindah ke arsip, tugas berulang pindah ke Menunggu.
+    // Irisan "Selesai" karena itu selalu 0% dan hanya membingungkan sebelah
+    // kartu "Selesai" yang menghitung riwayat — jadi irisannya dihapus.
+    const pctCd = activeTasks.length > 0 ? Math.min(100, Math.round((totalCd / activeTasks.length) * 100)) : 0
+    const pctSiap = activeTasks.length > 0 ? Math.min(100 - pctCd, Math.round((totalSiap / activeTasks.length) * 100)) : 0
 
     const readyNow = sortTasksByPriorityAndPin(activeTasks.filter(t => t.status === 'siap'))
     const soon = activeTasks.filter(t => t.status === 'cooldown').sort((a, b) => a.cooldownMs - b.cooldownMs).slice(0, 10)
@@ -3291,7 +3343,7 @@ export default function MBGPage() {
       { key: 'aktif', label: 'Task aktif', value: activeTasks.length, color: '#000', tab: 'all', hint: 'Lihat semua task' },
       { key: 'siap', label: 'Siap dikerjakan', value: totalSiap, color: 'var(--win95-siap)', tab: 'siap', hint: 'Buka daftar siap' },
       { key: 'cd', label: 'Menunggu', value: totalCd, color: '#6b6b00', tab: 'cooldown', hint: 'Buka daftar menunggu' },
-      { key: 'done', label: 'Selesai', value: activeDone, color: '#606060', tab: 'selesai', hint: 'Buka daftar selesai' },
+      { key: 'done', label: 'Selesai', value: totalDone, color: '#606060', tab: 'selesai', hint: 'Buka daftar selesai' },
     ]
 
     return (
@@ -3314,12 +3366,10 @@ export default function MBGPage() {
           <div className="v3-progress-bar">
             <div style={{ left: 0, width: `${pctSiap}%`, background: 'var(--win95-siap)' }} />
             <div style={{ left: `${pctSiap}%`, width: `${pctCd}%`, background: '#d4c34a' }} />
-            <div style={{ left: `${pctSiap + pctCd}%`, width: `${pctDone}%`, background: '#9a9a9a' }} />
           </div>
           <div className="v3-progress-legend">
             <span><i style={{ background: 'var(--win95-siap)' }} /> Siap {pctSiap}%</span>
             <span><i style={{ background: '#d4c34a' }} /> Menunggu {pctCd}%</span>
-            <span><i style={{ background: '#9a9a9a' }} /> Selesai {pctDone}%</span>
           </div>
         </div>
 
@@ -3776,6 +3826,7 @@ export default function MBGPage() {
           onEdit={() => { if (detailRef.current) openEdit(detailRef.current) }}
           onComplete={() => { if (detailRef.current) { complete(detailRef.current.id); setDialogType(null) } }}
           onReset={() => { if (detailRef.current) { reset(detailRef.current.id); setDialogType(null) } }}
+          onUndoComplete={() => { if (detailRef.current) { void undoLastComplete(detailRef.current); setDialogType(null) } }}
           onDelete={() => { if (detailRef.current) { delTask(detailRef.current.id); setDialogType(null) } }}
           onTogglePin={() => { if (detailRef.current) { togglePin(detailRef.current); detailRef.current = { ...detailRef.current, pinned: !detailRef.current.pinned } } }}
           onSaveNotes={saveNotes} noteDraft={noteDraftsRef.current[detailRef.current.id]} scheduleLabels={SCHEDULE_LABELS} autoCompleteLink={settings.autoCompleteLink}
@@ -4115,8 +4166,12 @@ export default function MBGPage() {
       )}
 
       {/* ===== CONFIRM DIALOG ===== */}
+      {/* zIndex 5500 > panel catatan (5000): konfirmasi "Hapus catatan" dibuka
+          DARI panel itu. Dengan z-index overlay biasa (200) dialognya terlindung
+          panel; di HP panel 320px menutupi hampir seluruh layar 390px sehingga
+          tombol Ya/Tidak tidak bisa ditekan sama sekali. */}
       {confirmData && (
-        <div className="win95-dialog-overlay" role="presentation" onClick={() => { if (!confirmLoading) setConfirmData(null) }}>
+        <div className="win95-dialog-overlay" style={{ zIndex: 5500 }} role="presentation" onClick={() => { if (!confirmLoading) setConfirmData(null) }}>
           <div ref={confirmDialogRef} className="win95-dialog" role="dialog" aria-modal="true" aria-label={confirmData.title} style={{ maxWidth: 'min(350px, 95vw)' }} onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()} onKeyDown={trapDialogFocus}>
             <div className="win95-titlebar"><span className="win95-titlebar-text">{confirmData.title}</span>{!confirmLoading && <button className="win95-titlebar-btn" aria-label="Tutup" onClick={() => setConfirmData(null)}>✕</button>}</div>
             <div className="win95-dialog-body" style={{ display: 'flex', alignItems: 'flex-start' }}><span className="win95-confirm-icon">⚠️</span><span className="win95-confirm-text">{confirmData.message}</span></div>
@@ -4138,6 +4193,7 @@ export default function MBGPage() {
 
           {contextMenu.task.status === 'siap' && <div className="win95-context-item" onClick={() => { complete(contextMenu.task.id); setContextMenu(null) }}>✅ Selesaikan</div>}
           {contextMenu.task.status !== 'siap' && contextMenu.task.scheduleType !== 'sekali' && contextMenu.task.scheduleType !== 'tanggal_spesifik' && <div className="win95-context-item" onClick={() => { reset(contextMenu.task.id); setContextMenu(null) }}>🔄 Reset</div>}
+          {contextMenu.task.status === 'selesai' && <div className="win95-context-item" onClick={() => { void undoLastComplete(contextMenu.task); setContextMenu(null) }}>↩ Batalkan selesai</div>}
           <div className="win95-context-item" onClick={() => { togglePin(contextMenu.task); setContextMenu(null) }}>{contextMenu.task.pinned ? '📌 Unpin' : '📌 Pin'}</div>
           {isSafeHttpUrl(contextMenu.task.link) && (
             <div className="win95-context-item" onClick={() => {
@@ -4337,9 +4393,10 @@ export default function MBGPage() {
       {/* ===== PROJECT CONTEXT MENU (Fix #1: clamped, Fix #7: batch complete, Fix #16: sort) ===== */}
       {projectContextMenu && (
         <div ref={projCtxRef} className="win95-context-menu" style={{ left: projectContextMenu.x, top: projectContextMenu.y, zIndex: 6000 }}>
-          <div className="win95-context-item" onClick={() => { toggleFolder(projectContextMenu.project.id); setProjectContextMenu(null) }}>
-            {expandedProjects.has(projectContextMenu.project.id) ? '📁 Collapse' : '📂 Expand'}
-          </div>
+          {/* Item "Collapse/Expand" dihapus: sisa tampilan pohon lama. Sejak
+              daftar tugas jadi kartu + sidebar, tidak ada folder yang bisa
+              dilipat, jadi tombolnya hanya mengganti label tanpa efek apa pun.
+              Menyaring proyek cukup dengan mengklik namanya di sidebar. */}
           <div className="win95-context-item" onClick={() => { openAdd(projectContextMenu.project.id); setProjectContextMenu(null) }}>➕ Tambah Task</div>
           {/* Fix #7: Batch Complete All Ready */}
           <div className={`win95-context-item ${batchCompleting === projectContextMenu.project.id ? 'disabled' : ''}`}
@@ -4377,7 +4434,7 @@ export default function MBGPage() {
               <h2>Mulai dari sini</h2>
               <ol>
                 <li><b>Tambah tugas.</b> Tekan <b>+ Tugas Baru</b>, isi nama dan pilih kapan dikerjakan. Proyek dan link tidak wajib.</li>
-                <li><b>Tambah tugas ke proyek.</b> Pilih proyek dulu (sidebar atau Monitor), tombolnya berubah jadi <b>+ Tugas di (nama proyek)</b>. Bisa juga klik kanan / tekan lama nama proyek → <b>Tambah Task</b>.</li>
+                <li><b>Tambah tugas ke proyek.</b> Pilih proyek dulu (sidebar atau Monitor), lalu tekan <b>＋ Tambah tugas di (nama proyek)</b> di bawah daftar. Tombol toolbar juga berubah jadi <b>+ Tugas di (nama proyek)</b>, dan bisa lewat klik kanan / tekan lama nama proyek → <b>Tambah Task</b>.</li>
                 <li><b>Banyak tugas sekaligus.</b> Isi tugas pertama lalu tekan <b>Simpan & tambah lagi</b>. Nama/link/deskripsi dikosongkan untuk tugas berikutnya, tetapi proyek, jadwal, dan prioritas tetap. Setiap tugas disimpan terpisah; kalau satu gagal, yang sudah tersimpan tidak hilang.</li>
                 <li><b>Kerjakan tugas yang siap.</b> Tekan <b>Buka link</b> jika ada, lalu kembali ke sini dan tekan <b>Selesai</b> setelah selesai.</li>
                 <li><b>Lihat kapan siap lagi.</b> Tugas berulang pindah ke <b>Menunggu</b>. Tugas satu kali ada di tab <b>Selesai</b>.</li>
@@ -4544,14 +4601,18 @@ export default function MBGPage() {
                 onChange={e => setNoteFormContent(e.target.value)}
                 style={{ width: '100%', fontSize: 11, marginBottom: 4, resize: 'vertical' }}
               />
-              <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              {/* flexWrap + minWidth:auto wajib: di layar ≥769px .win95-btn punya
+                  min-width 100px, jadi 7 kotak warna + Batal + Simpan melampaui
+                  panel 320px dan tombol Simpan terdorong keluar layar sehingga
+                  catatan yang sedang diedit tidak bisa disimpan. */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
                 {['#FFFFCC', '#FFCCCC', '#CCFFCC', '#CCE5FF', '#E5CCFF', '#FFE5CC', '#FFFFFF'].map(c => (
                   <div key={c} onClick={() => setNoteFormColor(c)}
                     style={{ width: 18, height: 18, background: c, border: noteFormColor === c ? '2px solid #000' : '1px solid #808080', cursor: 'pointer', flexShrink: 0 }} />
                 ))}
                 <div style={{ flex: 1 }} />
-                {editingNoteId && <button className="win95-btn" style={{ fontSize: 10, padding: '1px 8px' }} onClick={() => { setEditingNoteId(null); setNoteFormContent(''); setNoteFormColor('#FFFFCC') }}>Batal</button>}
-                <button className="win95-btn primary" style={{ fontSize: 10, padding: '1px 8px' }} onClick={saveNote}>{editingNoteId ? 'Simpan' : 'Tambah'}</button>
+                {editingNoteId && <button className="win95-btn" style={{ fontSize: 10, padding: '1px 8px', minWidth: 'auto' }} onClick={() => { setEditingNoteId(null); setNoteFormContent(''); setNoteFormColor('#FFFFCC') }}>Batal</button>}
+                <button className="win95-btn primary" style={{ fontSize: 10, padding: '1px 8px', minWidth: 'auto' }} onClick={saveNote}>{editingNoteId ? 'Simpan' : 'Tambah'}</button>
               </div>
             </div>
             {/* Notes list */}
@@ -4626,8 +4687,8 @@ function HL({ text, q }: { text: string; q: string }) {
 }
 
 /* ===== Detail Dialog ===== */
-function DetailDialog({ task, onClose, onEdit, onComplete, onReset, onDelete, onTogglePin, onSaveNotes, noteDraft, scheduleLabels, autoCompleteLink, fmtTime, fmtFull }: {
-  task: Task; onClose: () => void; onEdit: () => void; onComplete: () => void; onReset: () => void
+function DetailDialog({ task, onClose, onEdit, onComplete, onReset, onUndoComplete, onDelete, onTogglePin, onSaveNotes, noteDraft, scheduleLabels, autoCompleteLink, fmtTime, fmtFull }: {
+  task: Task; onClose: () => void; onEdit: () => void; onComplete: () => void; onReset: () => void; onUndoComplete: () => void
   onDelete: () => void; onTogglePin: () => void; onSaveNotes: (id: string, notes: string) => void; noteDraft?: string; scheduleLabels: Record<string, string>
   autoCompleteLink?: boolean; fmtTime: (d: Date) => string; fmtFull: (d: Date) => string
 }) {
@@ -4731,6 +4792,9 @@ function DetailDialog({ task, onClose, onEdit, onComplete, onReset, onDelete, on
               <button className="v3-btn v3-btn-primary" onClick={onComplete}>✓ Selesai</button>
             )}
             {canReset && <button className="v3-btn" onClick={onReset}>Hapus riwayat…</button>}
+            {/* Tugas sekali tidak punya "Hapus riwayat" — tanpa tombol ini ia
+                tidak bisa dikembalikan kalau keliru ditandai selesai. */}
+            {task.status === 'selesai' && <button className="v3-btn" onClick={onUndoComplete}>↩ Batalkan selesai</button>}
             {isSafeHttpUrl(task.link) && (
               <button className="v3-btn" onClick={() => {
                 if (autoCompleteLink && isReady) onComplete()

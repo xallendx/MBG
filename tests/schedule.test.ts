@@ -150,6 +150,37 @@ describe('mingguan', () => {
     const ready = getNextReadyAt(t, 'WITA')!
     expect(ready.getTime()).toBeGreaterThan(Date.now() + 6 * 86400000)
   })
+
+  // Regresi: dikerjakan tepat sebelum hari target tidak boleh kehilangan satu
+  // minggu. Dulu hasilnya ditambah 7 hari penuh, bukan sekadar sisa jeda.
+  it('dikerjakan Minggu 23:00 untuk target Senin → siap Senin 23:00, bukan dua minggu kemudian', () => {
+    const sunday2300Wib = new Date('2026-03-15T16:00:00.000Z') // Minggu 23:00 WIB
+    vi.setSystemTime(sunday2300Wib)
+    const t: ScheduleTask = {
+      scheduleType: 'mingguan',
+      scheduleConfig: JSON.stringify({ dayOfWeek: 1, cooldownHours: 24 }),
+      logs: [{ completedAt: sunday2300Wib }],
+    }
+    const ready = getNextReadyAt(t, 'WIB')!
+    // Senin 23:00 WIB = 2026-03-16T16:00:00Z, tepat 24 jam kemudian.
+    expect(ready.toISOString()).toBe('2026-03-16T16:00:00.000Z')
+  })
+
+  it('jeda mingguan maksimum (168 jam) tidak melompat dua minggu', () => {
+    // Selasa 10:00 WITA adalah hari target; jeda 168 jam berakhir Selasa 10:00
+    // pekan depan, sedangkan hari target berikutnya Selasa 00:00.
+    const t = task('mingguan', { dayOfWeek: 2, cooldownHours: 168 }, [0])
+    const ready = getNextReadyAt(t, 'WITA')!
+    const jarakJam = (ready.getTime() - Date.now()) / 3600000
+    expect(jarakJam).toBeCloseTo(168, 5)
+  })
+
+  it('jeda pendek tetap menunggu hari target, bukan tengah malam berikutnya saja', () => {
+    const t = task('mingguan', { dayOfWeek: 2, cooldownHours: 2 }, [1])
+    const ready = getNextReadyAt(t, 'WITA')!
+    // Jeda sudah lewat, tapi hari target berikutnya masih pekan depan.
+    expect(ready.getTime()).toBeGreaterThan(Date.now() + 6 * 86400000)
+  })
 })
 
 describe('tanggal_spesifik', () => {
