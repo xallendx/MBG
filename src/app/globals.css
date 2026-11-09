@@ -2779,3 +2779,50 @@ button:disabled {
   .v3-row { row-gap: 1px; padding-top: 6px; padding-bottom: 6px; }
   .v3-row-act { margin-top: 3px; }
 }
+
+/* ── Tambah tugas ke proyek ──────────────────────────────────────────────────
+   Banner tujuan di dialog tugas: pengguna harus tahu tugasnya masuk ke mana
+   sebelum menekan simpan. Gaya mengikuti fieldset Win95, bukan kartu modern. */
+.task-target-project {
+  margin: 0 0 10px;
+  padding: 6px 8px;
+  background: #ffffe1; /* kuning tooltip Win95 */
+  border: 1px solid #808080;
+  font-size: 12px;
+  color: #202020;
+}
+
+/* Nama proyek bisa sampai 100 karakter — label tombol tidak boleh mendorong
+   toolbar keluar layar. Biar teksnya yang turun baris, tombolnya tetap utuh. */
+.win95-toolbar-btn .toolbar-add-label {
+  display: inline-block;
+  max-width: min(46vw, 260px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+.v3-empty .v3-btn { white-space: normal; }
+
+@media (pointer: coarse) {
+  /* Baris proyek di Monitor kini target long-press (menu proyek) — wajib 44px. */
+  .v3-projrow { min-height: var(--touch-min); }
+
+  /* Menu proyek sekarang bisa dibuka di HP; itemnya dulu hanya 44px di
+     breakpoint tablet, di ponsel bisa lebih pendek. Samakan semua. */
+  .win95-context-item {
+    min-height: var(--touch-min);
+    display: flex;
+    align-items: center;
+  }
+
+  /* Input/select dialog tugas: aturan lama memberi 36-40px di HP/tablet.
+     Proyek (opsional) adalah select yang justru sering dipakai saat menambah
+     tugas ke proyek — naikkan ke 44px seperti target sentuh lain. */
+  .win95-input,
+  .win95-select,
+  .task-form-dialog .win95-input,
+  .task-form-dialog .win95-select {
+    min-height: var(--touch-min);
+  }
+}

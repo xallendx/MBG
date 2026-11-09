@@ -4,7 +4,7 @@ import { isSafeHttpUrl } from '@/lib/safe-url'
 
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { scheduleInputError } from '@/lib/schedule-input'
-import { PRIORITY_DOT, PRIORITY_LABEL, SCHEDULE_LABELS, cooldownColor, cooldownIcon, priorityDot, priorityLabel, scheduleLabel } from '@/lib/task-view'
+import { NO_PROJECT_FILTER, PRIORITY_DOT, PRIORITY_LABEL, SCHEDULE_LABELS, cooldownColor, cooldownIcon, priorityDot, priorityLabel, projectFilterAfterAdd, projectIdForNewTask, scheduleLabel } from '@/lib/task-view'
 
 /* ===== Types ===== */
 interface Note {
@@ -1384,7 +1384,11 @@ export default function MBGPage() {
       if (!skipDialogClose) { setDialogType(null); setSelectedTaskId(null) }
       if (isAdd) {
         // Tugas baru harus terlihat walaupun sebelumnya ada filter/pencarian aktif.
-        setViewMode('dashboard'); setActiveTab('all'); setDashFilterProject(null)
+        // Filter proyek dipertahankan HANYA jika tugasnya masuk proyek itu —
+        // supaya "tambah tugas pada proyek" tidak melempar pengguna keluar proyek.
+        const savedProjectId = projectIdForNewTask(formProjectId)
+        setViewMode('dashboard'); setActiveTab('all')
+        setDashFilterProject(projectFilterAfterAdd(dashFilterProject, savedProjectId))
         setDashFilterQuery(''); setSearchQuery(''); setBulkSelected(new Set()); setSelectMode(false)
       }
       toast(isAdd ? 'Tugas berhasil ditambahkan.' : 'Perubahan berhasil disimpan.', 'success')
@@ -2228,16 +2232,23 @@ export default function MBGPage() {
 
   /* ===== Openers ===== */
   const openAdd = (projectId: string | null) => {
+    // Sentinel filter '__no_project__' bukan id proyek asli — normalkan dulu.
+    const pid = projectIdForNewTask(projectId)
     setTaskFormError('')
-    setFormProjectId(projectId)
+    setFormProjectId(pid)
     setFormName(''); setFormDesc(''); setFormLink(''); setFormScheduleType('sekali'); setFormScheduleConfig({})
     setFormPriority('medium')
     setDialogType('add')
+    // Buka folder tujuannya supaya tugas yang baru dibuat langsung terlihat.
+    setExpandedProjects(prev => new Set(prev).add(pid ?? NO_PROJECT_FILTER))
   }
   const openAddStandalone = () => {
     openAdd(null)
-    // Auto-expand the 'Tanpa Project' folder
-    setExpandedProjects(prev => new Set(prev).add('__no_project__'))
+  }
+  // Tombol "Tugas Baru" mengikuti filter proyek yang sedang aktif: kalau sedang
+  // melihat satu proyek, tugas baru masuk ke proyek itu (perilaku pintasan N).
+  const openAddForCurrentFilter = () => {
+    openAdd(dashFilterProject)
   }
 
   const openEdit = (t: Task) => {
@@ -2303,6 +2314,13 @@ export default function MBGPage() {
     const pos = clampPos(e.clientX, e.clientY)
     setProjectContextMenu({ x: pos.x, y: pos.y, project: p })
   }
+  // Klik biasa pada baris proyek = filter. Setelah long-press membuka menu,
+  // browser mengirim klik sintetis saat jari diangkat — jangan sampai klik itu
+  // langsung menutup menu yang baru dibuka / mengganti filter.
+  const selectProjectFilter = (id: string | null) => {
+    if (Date.now() - ctxOpenTimeRef.current < 300) return
+    clearBulk(); setDashFilterProject(id); setDashFilterQuery('')
+  }
 
   /* ===== Long-press handlers for mobile context menu ===== */
   const handleTouchStart = (e: React.TouchEvent, t: Task) => {
@@ -2328,6 +2346,7 @@ export default function MBGPage() {
     const touch = e.touches[0]
     // Cancel any existing long-press timer (prevents ghost context menus when switching between task/project)
     if (longPressTimerRef.current) { clearTimeout(longPressTimerRef.current); longPressTimerRef.current = null }
+    setContextMenu(null) // tutup menu task kalau sedang terbuka
     longPressPosRef.current = { x: touch.clientX, y: touch.clientY }
     longPressMovedRef.current = false
     longPressProjectRef.current = p
@@ -2357,6 +2376,9 @@ export default function MBGPage() {
       // React's e.stopPropagation() on synthetic events does NOT stop native document listeners
       const target = e.target as HTMLElement
       if (target.closest('.win95-menubar-item') || target.closest('.win95-dropdown') || target.closest('.win95-titlebar-btn') || target.closest('.win95-context-menu')) return
+      // Long-press selesai → browser mengirim klik sintetis saat jari diangkat.
+      // Tanpa penjaga ini menu yang BARU dibuka langsung ditutup lagi.
+      if (Date.now() - ctxOpenTimeRef.current < 300) return
       setContextMenu(null); setProjectContextMenu(null); setOpenMenu(null); setProfileMenuOpen(false)
     }
     document.addEventListener('click', c); return () => document.removeEventListener('click', c)
@@ -2797,8 +2819,13 @@ export default function MBGPage() {
               <button
                 key={p.id}
                 className={`v3-side-item ${dashFilterProject === p.id ? 'active' : ''}`}
-                onClick={() => { clearBulk(); setDashFilterProject(p.id); setDashFilterQuery('') }}
-                title={`Tampilkan hanya ${p.name}`}
+                onClick={() => selectProjectFilter(p.id)}
+                onContextMenu={e => handleProjCtx(e, p)}
+                onTouchStart={e => handleProjTouchStart(e, p)}
+                onTouchMove={handleTouchMove}
+                onTouchEnd={handleTouchEnd}
+                onTouchCancel={handleTouchEnd}
+                title={`Tampilkan hanya ${p.name} — klik kanan untuk menu proyek`}
               >
                 <span className="v3-side-swatch" style={{ background: p.color }} />
                 <span className="v3-side-name">{p.name}</span>
@@ -2917,13 +2944,16 @@ export default function MBGPage() {
             {tasks.length === 0 ? (
               <div className="v3-empty">
                 <span className="v3-empty-icon">📋</span>
-                <div className="first-task-title">Mulai dengan tugas pertama</div>
-                <button className="v3-btn v3-btn-primary first-task-button" onClick={openAddStandalone}>+ Tambah tugas</button>
+                <div className="first-task-title">{addToolbarProject ? `Mulai isi proyek "${addToolbarProject.name}"` : 'Mulai dengan tugas pertama'}</div>
+                <button className="v3-btn v3-btn-primary first-task-button" onClick={openAddForCurrentFilter}>+ Tambah tugas</button>
               </div>
             ) : visibleTasks.length === 0 ? (
               <div className="v3-empty">
                 <span className="v3-empty-icon">📭</span>
                 <div>{activeTab === 'all' && !debouncedSearch.trim() && listPool.some(t => t.status === 'selesai') ? 'Tugas di sini sudah selesai. Lihat kembali di tab Selesai.' : emptyFilterText()}</div>
+                {addToolbarProject && (
+                  <button className="v3-btn v3-btn-primary" style={{ marginTop: 10 }} onClick={openAddForCurrentFilter}>+ Tambah tugas di {addToolbarProject.name}</button>
+                )}
                 {activeTab === 'all' && !debouncedSearch.trim() && listPool.some(t => t.status === 'selesai') && (
                   <button className="v3-btn" style={{ marginTop: 10 }} onClick={() => { clearBulk(); setActiveTab('selesai') }}>Lihat tugas selesai</button>
                 )}
@@ -3006,7 +3036,8 @@ export default function MBGPage() {
           done: act.filter(t => t.status === 'selesai').length,
         }
       })
-      .filter(p => p.total > 0)
+      // Proyek kosong TETAP ditampilkan: di HP sidebar disembunyikan, jadi baris
+      // ini satu-satunya jalan membuka proyek baru yang belum punya tugas.
 
     const cards: { key: string; label: string; value: number; color: string; tab: 'all' | 'siap' | 'cooldown' | 'selesai'; hint: string }[] = [
       { key: 'project', label: 'Project', value: projects.length, color: '#000080', tab: 'all', hint: 'Lihat semua task' },
@@ -3067,7 +3098,14 @@ export default function MBGPage() {
                 const s = p.total > 0 ? Math.round((p.siap / p.total) * 100) : 0
                 const c = p.total > 0 ? Math.round((p.cd / p.total) * 100) : 0
                 return (
-                  <button type="button" key={p.id} className="v3-projrow" onClick={() => { setViewMode('dashboard'); setActiveTab('all'); exitSelectMode(); setDashFilterProject(p.id); setDashFilterQuery(''); setSearchQuery('') }}>
+                  <button type="button" key={p.id} className="v3-projrow"
+                    onClick={() => { if (Date.now() - ctxOpenTimeRef.current < 300) return; setViewMode('dashboard'); setActiveTab('all'); exitSelectMode(); setDashFilterProject(p.id); setDashFilterQuery(''); setSearchQuery('') }}
+                    onContextMenu={e => handleProjCtx(e, p)}
+                    onTouchStart={e => handleProjTouchStart(e, p)}
+                    onTouchMove={handleTouchMove}
+                    onTouchEnd={handleTouchEnd}
+                    onTouchCancel={handleTouchEnd}
+                    title={`Buka proyek ${p.name} — klik kanan / tekan lama untuk menu (tambah task, share)`}>
                     <span className="v3-side-swatch" style={{ background: p.color }} />
                     <span className="v3-projrow-name">{p.name}</span>
                     <span className="v3-progress-bar v3-progress-mini">
@@ -3183,6 +3221,11 @@ export default function MBGPage() {
 
   // Active counts — already memoized above, just get addDialogProject here
   const addDialogProject = projects.find(p => p.id === formProjectId)
+  // Proyek yang sedang difilter di dashboard — tombol toolbar "+ Tugas" dan
+  // empty state memakainya supaya tugas baru langsung masuk ke proyek itu.
+  const addToolbarProject = viewMode !== 'monitor' && dashFilterProject && dashFilterProject !== NO_PROJECT_FILTER
+    ? projects.find(p => p.id === dashFilterProject) ?? null
+    : null
 
   /* Fix #17: Check if all folders are empty under active filter */
   const hasAnyContent = sortedProjects.some(p => {
@@ -3283,11 +3326,11 @@ export default function MBGPage() {
         <div className="win95-toolbar" style={{ flexWrap: 'wrap', gap: 3 }}>
           <button
             className="win95-toolbar-btn"
-            onClick={openAddStandalone}
-            title="Buat task baru (T)"
+            onClick={openAddForCurrentFilter}
+            title={addToolbarProject ? `Tambah tugas ke proyek ${addToolbarProject.name} (N)` : 'Buat task baru (N)'}
             style={{ fontWeight: 'bold', color: '#005500', paddingLeft: 10, paddingRight: 10 }}
           >
-            ＋ <span>Tugas Baru</span>
+            ＋ <span className="toolbar-add-label">{addToolbarProject ? `Tugas di ${addToolbarProject.name}` : 'Tugas Baru'}</span>
           </button>
           <button
             className="win95-toolbar-btn"
@@ -3378,6 +3421,11 @@ export default function MBGPage() {
               <button className="win95-titlebar-btn" aria-label="Tutup" onClick={() => setDialogType(null)}>✕</button>
             </div>
             <div className="win95-dialog-body">
+              {dialogType === 'add' && addDialogProject && (
+                <div className="task-target-project" role="note">
+                  📁 Masuk ke proyek: <b>{addDialogProject.name}</b>
+                </div>
+              )}
               <div className="win95-field"><label htmlFor="task-name">Apa yang ingin dikerjakan? *</label><input id="task-name" type="text" required className="win95-input" value={formName} onChange={e => { setFormName(e.target.value); setTaskFormError('') }} placeholder="Contoh: Klaim faucet" autoFocus /></div>
               <div className="win95-field"><label htmlFor="task-schedule">Kapan tugas ini dikerjakan?</label>
                 <select id="task-schedule" className="win95-select" aria-label="Jadwal tugas" value={formScheduleType} onChange={e => {
@@ -3418,16 +3466,12 @@ export default function MBGPage() {
                 <summary>Pengaturan tambahan</summary>
               <div className="win95-field">
                 <label htmlFor="task-project">Proyek (opsional)</label>
-                {dialogType === 'add' && addDialogProject ? (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 8px', background: '#fff', border: '2px inset', fontSize: 12 }}>
-                    <span style={{ width: 12, height: 12, background: addDialogProject.color, display: 'inline-block', border: '1px solid rgba(0,0,0,0.3)' }} />{addDialogProject.name}
-                  </div>
-                ) : (
-                  <select id="task-project" className="win95-select" value={formProjectId === '__no_project__' ? '' : (formProjectId || '')} onChange={e => setFormProjectId(e.target.value || null)}>
-                    <option value="">Tanpa proyek</option>
-                    {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                  </select>
-                )}
+                {/* Selalu bisa diganti — dulu proyek terkunci saat tambah dari
+                    menu proyek, pengguna tidak bisa mengoreksi salah pilih. */}
+                <select id="task-project" className="win95-select" value={formProjectId === NO_PROJECT_FILTER ? '' : (formProjectId || '')} onChange={e => setFormProjectId(e.target.value || null)}>
+                  <option value="">Tanpa proyek</option>
+                  {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
               </div>
                 <div className="win95-field"><label htmlFor="task-description">Deskripsi (opsional)</label><textarea id="task-description" className="win95-textarea" rows={2} value={formDesc} onChange={e => setFormDesc(e.target.value)} placeholder="Catatan tentang tugas ini…" /></div>
                 <fieldset className="task-priority"><legend>Prioritas</legend>
@@ -4073,6 +4117,7 @@ export default function MBGPage() {
               <h2>Mulai dari sini</h2>
               <ol>
                 <li><b>Tambah tugas.</b> Tekan <b>+ Tugas Baru</b>, isi nama dan pilih kapan dikerjakan. Proyek dan link tidak wajib.</li>
+                <li><b>Tambah tugas ke proyek.</b> Pilih proyek dulu (sidebar atau Monitor), tombolnya berubah jadi <b>+ Tugas di (nama proyek)</b>. Bisa juga klik kanan / tekan lama nama proyek → <b>Tambah Task</b>.</li>
                 <li><b>Kerjakan tugas yang siap.</b> Tekan <b>Buka link</b> jika ada, lalu kembali ke sini dan tekan <b>Selesai</b> setelah selesai.</li>
                 <li><b>Lihat kapan siap lagi.</b> Tugas berulang pindah ke <b>Menunggu</b>. Tugas satu kali ada di tab <b>Selesai</b>.</li>
               </ol>
