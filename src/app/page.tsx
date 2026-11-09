@@ -1631,6 +1631,12 @@ export default function MBGPage() {
       // Replace temp ID with real ID
       setProjects(prev => prev.map(p => p.id === tempId ? { id: data.id, name: data.name, color: data.color, _count: { tasks: 0 } } : p))
       setExpandedProjects(prev => { const n = new Set(prev); n.delete(tempId); n.add(data.id); return n })
+      // Langsung masuk ke proyek barunya: toolbar berubah jadi "+ Tugas di X"
+      // dan empty state menawarkan "+ Tambah tugas di X" — tidak perlu mencari
+      // proyeknya dulu di sidebar/Monitor.
+      setViewMode('dashboard'); setActiveTab('all')
+      setDashFilterProject(data.id); setDashFilterQuery(''); setSearchQuery('')
+      setBulkSelected(new Set()); setSelectMode(false)
       lastWriteTime.current = Date.now()
       delayedFetch()
     } catch (e) {
