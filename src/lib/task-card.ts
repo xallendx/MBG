@@ -30,6 +30,14 @@ export interface TaskCardActions {
   showComplete: boolean
   /** Tombol buka link untuk tugas yang belum siap (tidak menyelesaikan). */
   showLink: boolean
+  /**
+   * Tombol "Batalkan selesai" untuk tugas yang sudah selesai.
+   *
+   * Tanpa ini tugas "Sekali" yang keliru ditandai selesai tidak bisa kembali:
+   * ia hilang dari daftar aktif, tidak punya tombol Reset (reset hanya untuk
+   * tugas berulang), dan satu-satunya jalan balik — toast Undo — sudah lenyap.
+   */
+  showUndo: boolean
 }
 
 /**
@@ -51,12 +59,19 @@ export function taskCardActions(task: TaskCardInput, autoCompleteLink: boolean):
         // salah tekan.
         showComplete: !autoCompleteLink,
         showLink: false,
+        showUndo: false,
       }
     }
-    return { primary: 'complete', primaryLabel: '✓ Selesai', showComplete: false, showLink: false }
+    return { primary: 'complete', primaryLabel: '✓ Selesai', showComplete: false, showLink: false, showUndo: false }
   }
 
-  return { primary: 'detail', primaryLabel: 'Lihat detail', showComplete: false, showLink: hasLink }
+  return {
+    primary: 'detail',
+    primaryLabel: 'Lihat detail',
+    showComplete: false,
+    showLink: hasLink,
+    showUndo: task.status === 'selesai',
+  }
 }
 
 export interface TaskCardStatusText {
