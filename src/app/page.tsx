@@ -6,6 +6,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { scheduleInputError } from '@/lib/schedule-input'
 import { NO_PROJECT_FILTER, PRIORITY_DOT, PRIORITY_LABEL, SCHEDULE_LABELS, cooldownColor, cooldownIcon, priorityDot, priorityLabel, projectFilterAfterAdd, projectIdForNewTask, scheduleLabel } from '@/lib/task-view'
 import { canonicalJson, cloneTaskDefaults, emptyTaskForm, isTaskFormDirty, newTaskRequestId, readTaskDefaults, rememberTaskDefaults, taskDefaultsKey, taskFormSnapshot, type TaskFormDefaults, type TaskFormSnapshot } from '@/lib/task-form'
+import { showProjectOnCard, taskCardActions, taskCardStatusText } from '@/lib/task-card'
 
 /* ===== Types ===== */
 interface Note {
@@ -2933,6 +2934,128 @@ export default function MBGPage() {
     )
   }
 
+  /**
+   * Satu kartu tugas. Menggantikan baris tabel di daftar tugas: nama, status,
+   * dan tombolnya berdekatan dalam satu kotak selebar tetap, bukan tersebar
+   * dari ujung kiri ke ujung kanan layar. Handler aksi memakai fungsi yang
+   * sama persis dengan baris lama — tidak ada perilaku baru.
+   */
+  const renderTaskCard = (t: Task) => {
+    const loading = completingIds.has(t.id)
+    const actions = taskCardActions(t, !!settings.autoCompleteLink)
+    const statusText = taskCardStatusText(t)
+    const isSelected = selectedTaskId === t.id || (selectMode && bulkSelected.has(t.id))
+    const pick = () => { if (selectMode) toggleBulk(t.id); else openDetail(t) }
+
+    const titleParts: string[] = []
+    if (t.description) titleParts.push(t.description)
+    if (t.notes) titleParts.push(`Catatan: ${t.notes}`)
+
+    return (
+      <article
+        key={t.id}
+        className={`v3-task-card${isSelected ? ' selected' : ''}`}
+        data-status={t.status}
+        onClick={pick}
+        onContextMenu={e => handleCtx(e, t)}
+        onTouchStart={e => handleTouchStart(e, t)}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        onTouchCancel={handleTouchEnd}
+        title={titleParts.length ? titleParts.join('\n') : undefined}
+      >
+        <div className="v3-task-card-head">
+          {selectMode && (
+            <input
+              type="checkbox"
+              className="v3-check v3-card-check"
+              checked={bulkSelected.has(t.id)}
+              onClick={e => e.stopPropagation()}
+              onChange={() => toggleBulk(t.id)}
+              aria-label={`Pilih ${t.name}`}
+            />
+          )}
+          <span className="v3-card-prio" style={{ background: priorityDot(t.priority) }} title={priorityLabel(t.priority)} />
+          <h3 className="v3-task-card-name">
+            <button
+              type="button"
+              className="v3-task-name-button"
+              aria-label={`${selectMode ? 'Pilih' : 'Lihat detail'} ${t.name}`}
+              onClick={e => { e.stopPropagation(); pick() }}
+            >
+              {t.pinned && <span title="Disematkan">📌 </span>}
+              {searchQuery ? <HL text={t.name} q={searchQuery} /> : t.name}
+            </button>
+          </h3>
+        </div>
+
+        <div className="v3-task-card-meta">
+          {showProjectOnCard(dashFilterProject) && (
+            t.project ? (
+              <span className="v3-chip">
+                <span className="v3-chip-dot" style={{ background: t.project.color }} />
+                {t.project.name}
+              </span>
+            ) : <span className="v3-chip">📎 Tanpa proyek</span>
+          )}
+          <span>{scheduleLabel(t.scheduleType)}</span>
+          {(t.logCount ?? 0) > 0 && <span>· {t.logCount}× selesai</span>}
+        </div>
+
+        <div className={`v3-task-card-status ${statusText.tone}`}>
+          {t.status === 'cooldown' && `${cooldownIcon(t.cooldownMs)} `}{statusText.text}
+          {t.status === 'cooldown' && t.nextReadyAt && <small>Siap {fmtFull(new Date(t.nextReadyAt))}</small>}
+        </div>
+
+        <div className="v3-task-card-act" onClick={e => e.stopPropagation()}>
+          <div className="v3-task-card-act-main">
+            {actions.primary === 'open-link' && (
+              <button
+                className="v3-btn v3-btn-primary v3-card-primary"
+                onClick={() => { if (settings.autoCompleteLink) completeAndOpenLink(t); else openTaskLink(t) }}
+                title={settings.autoCompleteLink ? 'Buka link dan tandai selesai sesuai pengaturan' : 'Buka link tanpa menyelesaikan tugas'}
+              >
+                {actions.primaryLabel}
+              </button>
+            )}
+            {actions.primary === 'complete' && (
+              <button className="v3-btn v3-btn-primary v3-card-primary" disabled={loading} title="Tandai selesai" onClick={() => complete(t.id)}>
+                {loading ? '⏳ Menyimpan…' : actions.primaryLabel}
+              </button>
+            )}
+            {actions.primary === 'detail' && (
+              <button className="v3-btn v3-card-primary" onClick={() => openDetail(t)}>{actions.primaryLabel}</button>
+            )}
+            <button
+              className="v3-btn v3-card-more"
+              aria-haspopup="menu"
+              aria-label={`Menu lain untuk ${t.name}`}
+              title="Menu lain"
+              onClick={e => handleCtx(e, t)}
+            >
+              ⋯
+            </button>
+          </div>
+
+          {(actions.showComplete || actions.showLink) && (
+            <div className="v3-task-card-act-row">
+              {actions.showComplete && (
+                <button className="v3-btn v3-card-secondary" disabled={loading} title="Tandai selesai" onClick={() => complete(t.id)}>
+                  {loading ? '⏳ Menyimpan…' : '✓ Selesai'}
+                </button>
+              )}
+              {actions.showLink && (
+                <button className="v3-btn v3-card-secondary" title="Buka link tanpa menyelesaikan tugas" onClick={() => openTaskLink(t)}>
+                  🔗 Buka link
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      </article>
+    )
+  }
+
   const renderDashboard = () => {
     const totalList = activeTasks.length
 
@@ -3060,21 +3183,9 @@ export default function MBGPage() {
             )
           })()}
 
-          {visibleTasks.length > 0 && <div className="v3-colhead">
-            {selectMode && <input
-              type="checkbox"
-              className="v3-check"
-              checked={visibleTasks.length > 0 && visibleTasks.every(t => bulkSelected.has(t.id))}
-              onChange={() => {
-                if (visibleTasks.length && visibleTasks.every(t => bulkSelected.has(t.id))) clearBulk()
-                else setBulkSelected(new Set(visibleTasks.map(t => t.id)))
-              }}
-              aria-label="Pilih semua tugas yang terlihat"
-            />}
-            <span className="v3-col-name">TUGAS</span>
-            <span className="v3-col-when">STATUS</span>
-            <span className="v3-col-act">AKSI</span>
-          </div>}
+          {/* Judul kolom TUGAS/STATUS/AKSI dihapus: tiap kartu sudah berdiri
+              sendiri, jadi header tabel hanya menambah baris tanpa informasi.
+              "Pilih semua yang terlihat" tetap ada di bar aksi massal. */}
 
           <div className="v3-list">
             {tasks.length === 0 ? (
@@ -3112,7 +3223,7 @@ export default function MBGPage() {
                           {sec.icon} {sec.label} ({items.length})
                         </div>
                       )}
-                      {items.map(renderTaskRow)}
+                      <div className="v3-card-grid">{items.map(renderTaskCard)}</div>
                     </div>
                   )
                 })}
@@ -3134,7 +3245,7 @@ export default function MBGPage() {
                 </button>
               </div>
             )}
-            {tasks.length > 0 && <div className="v3-hint">Klik tugas untuk melihat detail</div>}
+            {tasks.length > 0 && <div className="v3-hint">Klik kartu untuk melihat detail · tombol ⋯ untuk menu lain</div>}
           </div>
         </div>
       </div>
