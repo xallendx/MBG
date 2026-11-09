@@ -121,5 +121,25 @@ export async function requireUser() {
   return user.id
 }
 
+/**
+ * Sama seperti requireUser, tetapi sekaligus membawa kolom settings.
+ *
+ * KENAPA: rute yang butuh zona waktu pengguna dulu memanggil requireUser()
+ * (1 query) lalu db.user.findUnique lagi untuk settings (query kedua) — dua
+ * perjalanan bolak-balik ke database untuk baris yang sama. Pada fungsi
+ * serverless yang jauh dari database, tiap perjalanan itu terasa.
+ */
+export async function requireUserWithSettings() {
+  const userId = await getUserId()
+  if (!userId) return null
+
+  const user = await db.user.findUnique({
+    where: { id: userId },
+    select: { id: true, isBlocked: true, settings: true },
+  })
+  if (!user || user.isBlocked) return null
+  return { id: user.id, settings: user.settings }
+}
+
 // Export verifyCookie for use in identify route (DRY)
 export { verifyCookie }

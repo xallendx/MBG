@@ -1,19 +1,18 @@
 import { NextResponse } from 'next/server'
 import { db } from '@/lib/db'
-import { requireUser } from '@/lib/auth'
+import { requireUserWithSettings } from '@/lib/auth'
 import { computeStatus, getNextReadyAt } from '@/lib/schedule'
 import { handleApiError } from '@/lib/api'
 import { getTimezone } from '@/lib/settings'
 
 export async function POST(_: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const userId = await requireUser()
-    if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    // Satu query untuk auth sekaligus zona waktu (dulu dua query terpisah).
+    const auth = await requireUserWithSettings()
+    if (!auth) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    const userId = auth.id
     const { id } = await params
-
-    // Fetch user settings for timezone
-    const user = await db.user.findUnique({ where: { id: userId }, select: { settings: true } }).catch(() => null)
-    const userTz = getTimezone(user?.settings, 'POST /api/tasks/[id]/complete')
+    const userTz = getTimezone(auth.settings, 'POST /api/tasks/[id]/complete')
 
     // Use transaction to prevent double-completion race condition
     const result = await db.$transaction(async (tx) => {
@@ -35,27 +34,26 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
         return { error: `Task tidak bisa diselesaikan — status saat ini: ${status}`, status: 400 as const }
       }
 
-      // Reset notification tracking + create log atomically
-      await tx.task.update({
-        where: { id },
-        data: {
-          notifiedWarnAt: null,
-          notifiedReadyAt: null,
-        }
-      })
-
       const createdLog = await tx.taskLog.create({
         data: { taskId: id }
       })
 
-      // BUG FIX: Recompute status AFTER creating the log to get accurate post-completion state
-      const updatedTask = await tx.task.findFirst({
-        where: { id, userId },
+      // Reset penanda notifikasi SEKALIGUS membaca ulang tugas beserta log yang
+      // baru dibuat. Dulu ini dua pernyataan (update lalu findFirst) sehingga
+      // ada satu perjalanan database ekstra pada setiap penyelesaian tugas.
+      // Urutannya penting: log dibuat lebih dulu supaya status yang dihitung
+      // dari balasan update sudah memperhitungkan penyelesaian ini.
+      const updatedTask = await tx.task.update({
+        where: { id },
+        data: {
+          notifiedWarnAt: null,
+          notifiedReadyAt: null,
+        },
         include: {
           logs: { orderBy: { completedAt: 'desc' }, take: 1 },
           _count: { select: { logs: true } },
           project: { select: { id: true, name: true, color: true } },
-        }
+        },
       })
 
       if (!updatedTask) return { success: true }

@@ -9,6 +9,8 @@ import { attemptIsSettled, canonicalJson, cloneTaskDefaults, emptyTaskForm, isTa
 import { showProjectOnCard, taskCardActions, taskCardStatusText } from '@/lib/task-card'
 import { activeOnly, countDone, countForTab, tasksForTab } from '@/lib/task-counts'
 import { refreshCachedTasks } from '@/lib/task-cache'
+import { taskFromApi, upsertTask } from '@/lib/task-from-api'
+import { tickCooldowns } from '@/lib/cooldown-tick'
 
 /* ===== Types ===== */
 interface Note {
@@ -712,6 +714,9 @@ export default function MBGPage() {
       const controller = new AbortController()
       const signal = controller.signal
       const timeout = setTimeout(() => controller.abort(), 20000)
+      // Waktu berangkat, bukan waktu tiba: respons yang berangkat sebelum ada
+      // tulisan lokal tidak boleh menimpa hasil tulisan itu.
+      const startedAt = Date.now()
 
       // STEP 1: Check auth HANYA saat pertama kali / manual refresh
       // Kalau skipAuthCheck=true (sesudah login/register/periodic), langsung fetch data
@@ -751,9 +756,12 @@ export default function MBGPage() {
         persistAuth(u)
       }
 
-      // Only update tasks/projects if enough time passed since last write (avoid overwriting optimistic state)
-      const timeSinceWrite = Date.now() - lastWriteTime.current
-      const shouldUpdateData = timeSinceWrite > SKIP_FETCH_AFTER_WRITE_MS || timeSinceWrite < 0
+      // Pakai data server hanya kalau tidak ada tulisan lokal yang lebih baru
+      // daripada saat request ini berangkat. Dulu patokannya "sudah lewat 5
+      // detik", yang membuat angka sidebar tertinggal dan tetap bisa kalah oleh
+      // respons basi pada jaringan lambat.
+      const lastWrite = lastWriteTime.current
+      const shouldUpdateData = lastWrite <= startedAt || lastWrite > Date.now()
 
       if (shouldUpdateData) {
         const newTasks = Array.isArray(data.tasks) ? (data.tasks as Task[]).map((t: Task) => ({
@@ -999,30 +1007,13 @@ export default function MBGPage() {
     })
   }, [loading, projects, tasks, settings.autoExpandSiap])
 
-  /* ===== Cooldown timer — skip re-render if nothing changed ===== */
+  /* ===== Cooldown timer — hanya render ulang kalau teksnya benar berubah =====
+     Logikanya di lib/cooldown-tick supaya bisa diuji: dulu perbandingan ikut
+     memakai cooldownMs yang berubah tiap detik, sehingga seluruh daftar kartu
+     ikut digambar ulang setiap detik walau tulisannya tetap sama. */
   useEffect(() => {
     const tick = setInterval(() => {
-      setTasks(prev => {
-        let changed = false
-        const next = prev.map(t => {
-          if (t.status !== 'cooldown' || !t.nextReadyAt) return t
-          const ms = Math.max(0, new Date(t.nextReadyAt).getTime() - Date.now())
-          if (ms <= 0) {
-            if (t.cooldownMs === 0 && t.cooldownRemaining === '') return t
-            changed = true
-            return { ...t, cooldownRemaining: '', cooldownMs: 0, status: 'siap' as const }
-          }
-          const h = Math.floor(ms / 3600000), m = Math.floor((ms % 3600000) / 60000), s = Math.floor((ms % 60000) / 1000)
-          let text = ''
-          if (h >= 1) text = `${h}j ${m}m`
-          else if (m >= 1) text = `${m}m ${s}s`
-          else text = `${s}s`
-          if (t.cooldownRemaining === text && t.cooldownMs === ms) return t
-          changed = true
-          return { ...t, cooldownRemaining: text, cooldownMs: ms }
-        })
-        return changed ? next : prev
-      })
+      setTasks(prev => tickCooldowns(prev, Date.now()))
     }, 1000)
     return () => clearInterval(tick)
   }, [])
@@ -1104,7 +1095,10 @@ export default function MBGPage() {
   const miscTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([])
   // Track last optimistic write time — prevent stale fetch from overwriting optimistic state
   const lastWriteTime = useRef(0)
-  const SKIP_FETCH_AFTER_WRITE_MS = 5000 // Reduced from 8s: Don't overwrite tasks/projects within 5s of a write
+  // 5000 → 1200: angka sidebar/Monitor dulu tertinggal sampai 5,5 detik seusai
+  // aksi. Sekarang hasil aksi langsung dipakai dari balasan server, jadi jendela
+  // ini hanya perlu menutup request yang berangkat SEBELUM tulis selesai.
+  const SKIP_FETCH_AFTER_WRITE_MS = 1200
 
   // Helper: delayed fetch with cleanup tracking + save to local cache
   const delayedFetch = useCallback(() => {
@@ -1112,8 +1106,8 @@ export default function MBGPage() {
     const timeSinceWrite = Date.now() - lastWriteTime.current
     const waitMs = timeSinceWrite < 0
       ? 1000 // lastWriteTime is in the future, wait briefly
-      : Math.max(1000, SKIP_FETCH_AFTER_WRITE_MS - timeSinceWrite + 500) // wait until after protection window + 500ms buffer
-    const t = setTimeout(() => fetchData(false, true), Math.min(waitMs, 10000)) // cap at 10s
+      : Math.max(300, SKIP_FETCH_AFTER_WRITE_MS - timeSinceWrite + 200) // wait until after protection window + buffer
+    const t = setTimeout(() => fetchData(false, true), Math.min(waitMs, 4000)) // cap at 4s
     fetchTimeoutsRef.current.push(t)
   }, [fetchData])
 
@@ -1460,6 +1454,16 @@ export default function MBGPage() {
       // Server sudah konfirmasi. Kunci percobaan selesai; tugas berikutnya wajib
       // memakai kunci baru agar tidak dianggap retry dari tugas ini.
       taskRequestRef.current = null
+      // Tampilkan hasilnya SEKARANG. Dulu balasan ini dibuang dan daftar baru
+      // berubah setelah /api/init selesai: pada jaringan lambat ada jeda kosong
+      // seusai dialog tertutup, dan kalau /api/init gagal tugas yang sudah
+      // tersimpan tidak pernah muncul — terlihat seperti gagal menyimpan.
+      const savedRaw = await res.json().catch(() => null)
+      const savedTask = taskFromApi(savedRaw, {
+        previous: isAdd ? null : tasks.find(t => t.id === editId) ?? null,
+        timezone: settings.timezone,
+      })
+      if (savedTask) setTasks(prev => upsertTask(prev, savedTask as Task, isAdd))
       if (isAdd) {
         const defaults: TaskFormDefaults = { scheduleType: payload.scheduleType, scheduleConfig: payload.scheduleConfig, priority: payload.priority }
         rememberTaskDefaults(taskDefaultsRef.current, authUser?.id, payload.projectId, defaults)
@@ -1483,9 +1487,10 @@ export default function MBGPage() {
       // tambahan justru menumpuk di bawah layar dan bisa menutupi tombol simpan
       // berikutnya, jadi cukup toast untuk simpan & selesai / edit.
       if (!isAdd || mode !== 'again') toast(isAdd ? 'Tugas berhasil ditambahkan.' : 'Perubahan berhasil disimpan.', 'success')
-      lastWriteTime.current = 0
-      // Refresh berjalan di latar belakang; form berikutnya tidak menunggu cold start.
-      void fetchData(false, true)
+      // Bukan 0: fetch yang berangkat SEBELUM simpan selesai harus dianggap basi,
+      // kalau tidak ia bisa menghapus tugas yang baru muncul dari daftar.
+      lastWriteTime.current = Date.now()
+      delayedFetch()
     } catch {
       // Hasil belum diketahui (bisa sudah commit, responsnya hilang). Kunci dan
       // draft dipertahankan supaya retry aman dan isian tidak hilang.
