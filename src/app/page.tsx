@@ -5,6 +5,7 @@ import { isSafeHttpUrl } from '@/lib/safe-url'
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { scheduleInputError } from '@/lib/schedule-input'
 import { NO_PROJECT_FILTER, PRIORITY_DOT, PRIORITY_LABEL, SCHEDULE_LABELS, cooldownColor, cooldownIcon, priorityDot, priorityLabel, projectFilterAfterAdd, projectIdForNewTask, scheduleLabel } from '@/lib/task-view'
+import { canonicalJson, cloneTaskDefaults, emptyTaskForm, isTaskFormDirty, newTaskRequestId, readTaskDefaults, rememberTaskDefaults, taskDefaultsKey, taskFormSnapshot, type TaskFormDefaults, type TaskFormSnapshot } from '@/lib/task-form'
 
 /* ===== Types ===== */
 interface Note {
@@ -120,7 +121,7 @@ export default function MBGPage() {
   const [activeTab, setActiveTab] = useState<'all' | 'siap' | 'cooldown' | 'selesai'>('all')
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const [dialogType, setDialogType] = useState<'add' | 'edit' | 'detail' | 'settings' | 'telegram' | 'edit-project' | 'add-project' | 'help' | 'share' | 'import-share' | 'notes' | 'admin' | 'templates' | 'reminders' | null>(null)
-  const [confirmData, setConfirmData] = useState<{ title: string; message: string; onConfirm: () => void } | null>(null)
+  const [confirmData, setConfirmData] = useState<{ title: string; message: string; onConfirm: () => void; confirmLabel?: string; cancelLabel?: string } | null>(null)
   const [confirmLoading, setConfirmLoading] = useState(false)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; task: Task } | null>(null)
   const [projectContextMenu, setProjectContextMenu] = useState<{ x: number; y: number; project: Project } | null>(null)
@@ -239,6 +240,16 @@ export default function MBGPage() {
   const [selectMode, setSelectMode] = useState(false)
   const [savingTask, setSavingTask] = useState(false)
   const [taskFormError, setTaskFormError] = useState('')
+  // Opsi A: satu tugas = satu konfirmasi server. Ref mengunci klik ganda bahkan
+  // sebelum React sempat merender ulang tombol disabled.
+  const savingTaskRef = useRef(false)
+  const taskRequestRef = useRef<string | null>(null)
+  const taskDefaultsRef = useRef(new Map<string, TaskFormDefaults>())
+  const taskDraftBaselineRef = useRef('')
+  const taskDialogRef = useRef<HTMLDivElement>(null)
+  const confirmDialogRef = useRef<HTMLDivElement>(null)
+  const [savedTaskCount, setSavedTaskCount] = useState(0)
+  const [taskDefaultsRemembered, setTaskDefaultsRemembered] = useState(false)
   const [savingProject, setSavingProject] = useState(false)
   // Global loading bar: shows thin progress at top of window ONLY for slow operations (>150ms)
   // This prevents visual noise on fast operations while still giving feedback on slow ones
@@ -1356,8 +1367,33 @@ export default function MBGPage() {
     })
   }
 
-  const saveTask = async (skipDialogClose?: boolean) => {
-    if (savingTask) return
+  const currentTaskForm = (): TaskFormSnapshot => ({
+    name: formName, description: formDesc, link: formLink,
+    scheduleType: formScheduleType, scheduleConfig: formScheduleConfig,
+    projectId: projectIdForNewTask(formProjectId), priority: formPriority,
+  })
+
+  const resetTaskDialog = () => {
+    setDialogType(null); setSelectedTaskId(null); setTaskFormError('')
+    setFormName(''); setFormDesc(''); setFormLink('')
+    taskRequestRef.current = null; taskDraftBaselineRef.current = ''
+    setSavedTaskCount(0); setTaskDefaultsRemembered(false)
+  }
+
+  const requestCloseTaskDialog = () => {
+    if (savingTaskRef.current) return
+    if (!isTaskFormDirty(currentTaskForm(), taskDraftBaselineRef.current)) { resetTaskDialog(); return }
+    setConfirmData({
+      title: 'Buang draft tugas?',
+      message: 'Isian yang belum disimpan akan hilang. Tugas yang sudah tersimpan tetap aman.',
+      confirmLabel: 'Buang draft', cancelLabel: 'Lanjut menulis',
+      onConfirm: () => { setConfirmData(null); resetTaskDialog() },
+    })
+  }
+
+  const saveTask = async (mode: 'close' | 'again' = 'close') => {
+    // Ref, bukan hanya state: dua klik sangat cepat tidak boleh mengirim dua POST.
+    if (savingTaskRef.current) return
     if (!formName.trim()) { setTaskFormError('Nama tugas wajib diisi.'); return }
     const scheduleError = scheduleInputError(formScheduleType, formScheduleConfig)
     if (scheduleError) { setTaskFormError(scheduleError); return }
@@ -1365,37 +1401,68 @@ export default function MBGPage() {
       try { const u = new URL(formLink.trim()); if (!['http:', 'https:'].includes(u.protocol)) throw new Error('protocol') }
       catch { setTaskFormError('Link harus dimulai dengan http:// atau https://.'); return }
     }
-    setTaskFormError('')
     const isAdd = dialogType === 'add'
     if (!isAdd && !(dialogType === 'edit' && selectedTaskId)) return
     const editId = selectedTaskId
+    // Bekukan isi saat tombol ditekan; perubahan selama request tidak boleh
+    // membuat pesan sukses merujuk isi yang berbeda.
+    const form = currentTaskForm()
+    const payload = {
+      name: form.name.trim(), description: form.description.trim() || null, link: form.link.trim() || null,
+      scheduleType: form.scheduleType, scheduleConfig: JSON.parse(canonicalJson(form.scheduleConfig)) as Record<string, unknown>,
+      projectId: form.projectId, priority: form.priority,
+    }
+    if (isAdd && !taskRequestRef.current) taskRequestRef.current = newTaskRequestId()
+    setTaskFormError('')
+    savingTaskRef.current = true
     setSavingTask(true)
     try {
       const res = await api(isAdd ? '/api/tasks' : `/api/tasks/${editId}`, jsonOpts(isAdd ? 'POST' : 'PUT', {
-        name: formName.trim(), description: formDesc || null, link: formLink || null,
-        scheduleType: formScheduleType, scheduleConfig: formScheduleConfig,
-        projectId: formProjectId && formProjectId !== '__no_project__' ? formProjectId : null, priority: formPriority,
+        ...payload, ...(isAdd ? { clientRequestId: taskRequestRef.current } : {}),
       }))
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
         setTaskFormError(err.error || 'Tugas tidak tersimpan. Periksa data dan coba lagi.')
+        if (err.code === 'REQUEST_PAYLOAD_CONFLICT') { lastWriteTime.current = 0; void fetchData(false, true) }
         return
       }
-      if (!skipDialogClose) { setDialogType(null); setSelectedTaskId(null) }
+      // Server sudah konfirmasi. Kunci percobaan selesai; tugas berikutnya wajib
+      // memakai kunci baru agar tidak dianggap retry dari tugas ini.
+      taskRequestRef.current = null
       if (isAdd) {
-        // Tugas baru harus terlihat walaupun sebelumnya ada filter/pencarian aktif.
-        // Filter proyek dipertahankan HANYA jika tugasnya masuk proyek itu —
-        // supaya "tambah tugas pada proyek" tidak melempar pengguna keluar proyek.
-        const savedProjectId = projectIdForNewTask(formProjectId)
+        const defaults: TaskFormDefaults = { scheduleType: payload.scheduleType, scheduleConfig: payload.scheduleConfig, priority: payload.priority }
+        rememberTaskDefaults(taskDefaultsRef.current, authUser?.id, payload.projectId, defaults)
         setViewMode('dashboard'); setActiveTab('all')
-        setDashFilterProject(projectFilterAfterAdd(dashFilterProject, savedProjectId))
+        setDashFilterProject(projectFilterAfterAdd(dashFilterProject, payload.projectId))
         setDashFilterQuery(''); setSearchQuery(''); setBulkSelected(new Set()); setSelectMode(false)
+        if (mode === 'again') {
+          const next = emptyTaskForm(payload.projectId, defaults)
+          setFormName(next.name); setFormDesc(next.description); setFormLink(next.link)
+          setFormScheduleType(next.scheduleType); setFormScheduleConfig(cloneTaskDefaults(defaults).scheduleConfig)
+          setFormProjectId(next.projectId); setFormPriority(next.priority)
+          taskDraftBaselineRef.current = taskFormSnapshot(next)
+          setSavedTaskCount(n => n + 1); setTaskDefaultsRemembered(true)
+        } else {
+          resetTaskDialog()
+        }
+      } else {
+        resetTaskDialog()
       }
-      toast(isAdd ? 'Tugas berhasil ditambahkan.' : 'Perubahan berhasil disimpan.', 'success')
+      // Mode "tambah lagi" sudah punya banner progres di dalam dialog. Toast
+      // tambahan justru menumpuk di bawah layar dan bisa menutupi tombol simpan
+      // berikutnya, jadi cukup toast untuk simpan & selesai / edit.
+      if (!isAdd || mode !== 'again') toast(isAdd ? 'Tugas berhasil ditambahkan.' : 'Perubahan berhasil disimpan.', 'success')
       lastWriteTime.current = 0
-      await fetchData(false, true)
-    } catch { setTaskFormError('Gagal menyimpan. Periksa koneksi dan coba lagi.') }
-    finally { setSavingTask(false) }
+      // Refresh berjalan di latar belakang; form berikutnya tidak menunggu cold start.
+      void fetchData(false, true)
+    } catch {
+      // Hasil belum diketahui (bisa sudah commit, responsnya hilang). Kunci dan
+      // draft dipertahankan supaya retry aman dan isian tidak hilang.
+      setTaskFormError('Belum ada konfirmasi dari server. Isian tetap aman; tekan simpan untuk mencoba lagi tanpa menggandakan tugas.')
+    } finally {
+      savingTaskRef.current = false
+      setSavingTask(false)
+    }
   }
 
   // Keep failed/in-flight note drafts for this session when the detail is closed.
@@ -2071,6 +2138,8 @@ export default function MBGPage() {
         setAuthUser(null)
         persistAuth(null)
         clearCache() // Clear user's cached data on logout
+        taskDefaultsRef.current.clear()
+        resetTaskDialog()
         setTasks([])
         setProjects([])
         setNotes([])
@@ -2238,12 +2307,19 @@ export default function MBGPage() {
 
   /* ===== Openers ===== */
   const openAdd = (projectId: string | null) => {
+    if (savingTaskRef.current) return
     // Sentinel filter '__no_project__' bukan id proyek asli — normalkan dulu.
     const pid = projectIdForNewTask(projectId)
-    setTaskFormError('')
-    setFormProjectId(pid)
-    setFormName(''); setFormDesc(''); setFormLink(''); setFormScheduleType('sekali'); setFormScheduleConfig({})
-    setFormPriority('medium')
+    const defaults = readTaskDefaults(taskDefaultsRef.current, authUser?.id, pid)
+    const form = emptyTaskForm(pid, defaults)
+    setTaskFormError(''); setSelectedTaskId(null)
+    setFormProjectId(form.projectId)
+    setFormName(form.name); setFormDesc(form.description); setFormLink(form.link)
+    setFormScheduleType(form.scheduleType); setFormScheduleConfig(form.scheduleConfig)
+    setFormPriority(form.priority)
+    taskRequestRef.current = null
+    taskDraftBaselineRef.current = taskFormSnapshot(form)
+    setSavedTaskCount(0); setTaskDefaultsRemembered(taskDefaultsRef.current.has(taskDefaultsKey(authUser?.id, pid)))
     setDialogType('add')
     // Buka folder tujuannya supaya tugas yang baru dibuat langsung terlihat.
     setExpandedProjects(prev => new Set(prev).add(pid ?? NO_PROJECT_FILTER))
@@ -2258,12 +2334,17 @@ export default function MBGPage() {
   }
 
   const openEdit = (t: Task) => {
+    if (savingTaskRef.current) return
     setTaskFormError('')
     setFormName(t.name); setFormDesc(t.description || ''); setFormLink(t.link || '')
     setFormScheduleType(t.scheduleType)
-    try { setFormScheduleConfig(JSON.parse(t.scheduleConfig)) } catch { setFormScheduleConfig({}) }
+    let config: Record<string, unknown> = {}
+    try { const parsed = JSON.parse(t.scheduleConfig); if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) config = parsed } catch { /* jadwal rusak → kosong */ }
+    setFormScheduleConfig(config)
     setFormProjectId(t.project?.id || null)
     setFormPriority(t.priority || 'medium')
+    taskRequestRef.current = null; setSavedTaskCount(0); setTaskDefaultsRemembered(false)
+    taskDraftBaselineRef.current = taskFormSnapshot({ name: t.name, description: t.description || '', link: t.link || '', scheduleType: t.scheduleType, scheduleConfig: config, projectId: t.project?.id || null, priority: t.priority || 'medium' })
     setSelectedTaskId(t.id); setDialogType('edit')
   }
   const openDetail = (t: Task) => { if (Date.now() - ctxOpenTimeRef.current < 300) return; detailRef.current = t; setSelectedTaskId(t.id); setDialogType('detail') }
@@ -2481,19 +2562,68 @@ export default function MBGPage() {
     toast('Template "' + t.name + '" dimuat!', 'info')
   }
 
+  /* ===== Dialog focus trap ===== */
+  const trapDialogFocus = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== 'Tab') return
+    const root = e.currentTarget
+    const items = Array.from(root.querySelectorAll<HTMLElement>('button, input, select, textarea, a[href], summary, [tabindex]'))
+      .filter(el => el.tabIndex >= 0 && !el.matches(':disabled') && el.getClientRects().length > 0)
+    if (items.length === 0) { e.preventDefault(); return }
+    const first = items[0], last = items[items.length - 1]
+    const active = document.activeElement
+    if (e.shiftKey) {
+      if (active === first || !root.contains(active)) { e.preventDefault(); last.focus() }
+    } else if (active === last || !root.contains(active)) { e.preventDefault(); first.focus() }
+  }
+
+  // Setelah "simpan & tambah lagi" sukses, fieldset baru aktif lagi saat commit.
+  // Fokus ke nama tugas berikutnya menunggu state itu, bukan menebak lewat rAF.
+  useEffect(() => {
+    if (dialogType === 'add' && savedTaskCount > 0 && !savingTask) {
+      document.getElementById('task-name')?.focus()
+    }
+  }, [dialogType, savedTaskCount, savingTask])
+
+  // Konfirmasi muncul di atas form tugas: fokus pindah ke tombol batal yang aman,
+  // lalu kembali ke pemicu saat konfirmasi ditutup (draft tidak ikut hilang).
+  useEffect(() => {
+    if (!confirmData) return
+    const previous = document.activeElement as HTMLElement | null
+    confirmDialogRef.current?.querySelector<HTMLElement>('[data-confirm-cancel]')?.focus()
+    return () => { if (previous?.isConnected) previous.focus() }
+  }, [confirmData])
+
   /* ===== Keyboard shortcuts ===== */
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement).tagName
+      const taskDialogOpen = dialogType === 'add' || dialogType === 'edit'
+      // Konfirmasi teratas dulu: Escape membatalkan konfirmasi, bukan membuang
+      // draft di belakangnya. Shortcut lain tidak boleh menembus dialog apa pun.
+      if (confirmData) {
+        if (e.key === 'Escape' && !confirmLoading) {
+          // stopImmediatePropagation: React bisa memasang ulang listener saat
+          // state berubah; jangan sampai Escape yang sama ikut menutup form.
+          e.preventDefault(); e.stopImmediatePropagation(); setConfirmData(null)
+        }
+        return
+      }
+      if (taskDialogOpen) {
+        if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); requestCloseTaskDialog(); return }
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+          e.preventDefault(); e.stopImmediatePropagation(); saveTask(e.shiftKey && dialogType === 'add' ? 'again' : 'close')
+        }
+        return
+      }
+      if (dialogType || moveDialogTask) {
+        if (e.key === 'Escape') { e.preventDefault(); closeAll() }
+        return
+      }
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
         if (e.key === 'Escape') {
           (e.target as HTMLElement).blur()
           // Jangan closeAll() jika user sedang menulis catatan (notes panel terbuka)
           if (!notesPanelOpen || tag !== 'TEXTAREA') closeAll()
-        }
-        // Feature 6: Ctrl+Enter in add task dialog
-        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && (dialogType === 'add' || dialogType === 'edit')) {
-          e.preventDefault(); saveTask()
         }
         return
       }
@@ -2533,7 +2663,7 @@ export default function MBGPage() {
       }
     }
     window.addEventListener('keydown', h); return () => window.removeEventListener('keydown', h)
-  }, [expandedProjects, projects, viewMode, dialogType, notesPanelOpen])
+  }, [expandedProjects, projects, viewMode, dialogType, notesPanelOpen, confirmData, confirmLoading, moveDialogTask, selectedTaskId, dashFilterProject, authUser?.id, formName, formDesc, formLink, formScheduleType, formScheduleConfig, formProjectId, formPriority, savingTask])
 
   const closeAll = () => { setDialogType(null); setConfirmData(null); setContextMenu(null); setProjectContextMenu(null); setOpenMenu(null); setMoveDialogTask(null); cancelWorking(); setProfileMenuOpen(false); setEditingNoteId(null); setNoteFormContent(''); setBatchCompleting(null); setTemplateDialogOpen(false); setImportCode(''); setImportPreview(null); setShareCode(''); setShareTaskCount(0); setTelegramCode(''); setMoveTargetProjectId(null) }
   const toggleCollapse = (s: string) => setCollapsedSections(p => ({ ...p, [s]: !p[s] }))
@@ -3420,13 +3550,19 @@ export default function MBGPage() {
 
       {/* ===== ADD/EDIT TASK DIALOG ===== */}
       {(dialogType === 'add' || dialogType === 'edit') && (
-        <div className="win95-dialog-overlay" role="presentation" onClick={() => setDialogType(null)}>
-          <div className="win95-dialog task-form-dialog" role="dialog" aria-modal="true" aria-label={dialogType === 'add' ? 'Tambah tugas' : 'Edit tugas'} onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
+        <div className="win95-dialog-overlay" role="presentation" onClick={requestCloseTaskDialog}>
+          <div ref={taskDialogRef} className="win95-dialog task-form-dialog" role="dialog" aria-modal="true" aria-busy={savingTask} inert={confirmData ? true : undefined} aria-label={dialogType === 'add' ? 'Tambah tugas' : 'Edit tugas'} onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()} onKeyDown={trapDialogFocus}>
             <div className="win95-titlebar">
               <span className="win95-titlebar-text">{dialogType === 'add' ? 'Tambah tugas' : 'Edit tugas'}</span>
-              <button className="win95-titlebar-btn" aria-label="Tutup" onClick={() => setDialogType(null)}>✕</button>
+              <button className="win95-titlebar-btn" aria-label="Tutup" disabled={savingTask} onClick={requestCloseTaskDialog}>✕</button>
             </div>
-            <div className="win95-dialog-body">
+            {dialogType === 'add' && savedTaskCount > 0 && (
+              <div className="task-save-progress" role="status">✓ {savedTaskCount} tugas tersimpan. Lanjutkan tugas berikutnya{formProjectId && formProjectId !== NO_PROJECT_FILTER ? ' di proyek yang sama' : ''}.</div>
+            )}
+            {dialogType === 'add' && taskDefaultsRemembered && savedTaskCount === 0 && (
+              <div className="task-defaults-hint">Jadwal dan prioritas terakhir dipakai lagi. Masih bisa diubah di bawah.</div>
+            )}
+            <fieldset className="win95-dialog-body task-form-fields" disabled={savingTask}>
               {dialogType === 'add' && addDialogProject && (
                 <div className="task-target-project" role="note">
                   📁 Masuk ke proyek: <b>{addDialogProject.name}</b>
@@ -3495,7 +3631,7 @@ export default function MBGPage() {
               )}
               </details>
 
-            </div>
+            </fieldset>
             {taskFormError && <div className="task-form-error" role="alert">⚠ {taskFormError}</div>}
             {/* Tombol simpan mati saat nama kosong. Tanpa keterangan, pengguna baru
                 tidak tahu apa yang kurang — jadi alasannya ditulis tepat di atas tombol. */}
@@ -3504,13 +3640,20 @@ export default function MBGPage() {
                 Isi dulu nama tugas di atas untuk melanjutkan.
               </div>
             )}
-            <div className="win95-dialog-footer">
-              <button className="win95-btn primary" disabled={!formName.trim() || savingTask} onClick={() => saveTask()}
+            <div className="win95-dialog-footer task-form-footer">
+              {dialogType === 'add' && (
+                <button className="win95-btn primary task-save-again" disabled={!formName.trim() || savingTask} onClick={() => saveTask('again')}
+                  aria-describedby={!formName.trim() ? 'task-name-hint' : undefined}
+                  title="Simpan tugas ini, lalu kosongkan nama/link untuk tugas berikutnya; jadwal dan proyek tetap">
+                  {savingTask ? '⏳ Menyimpan...' : '＋ Simpan & tambah lagi'}
+                </button>
+              )}
+              <button className={`win95-btn ${dialogType === 'edit' ? 'primary' : ''}`} disabled={!formName.trim() || savingTask} onClick={() => saveTask('close')}
                 aria-describedby={!formName.trim() ? 'task-name-hint' : undefined}
                 title={!formName.trim() ? 'Isi nama tugas dulu' : undefined}
-                style={savingTask ? { opacity: 0.6, cursor: 'wait' } : {}}>{savingTask ? '⏳ Menyimpan...' : dialogType === 'add' ? 'Tambah tugas' : 'Simpan perubahan'}</button>
-              <button className="win95-btn" onClick={() => setDialogType(null)}>Batal</button>
-              <div className="desktop-only-hint" style={{ flex: 1, fontSize: 9, color: '#808080', textAlign: 'right' }}>Ctrl+Enter untuk simpan</div>
+                style={savingTask ? { opacity: 0.6, cursor: 'wait' } : {}}>{savingTask ? '⏳ Menyimpan...' : dialogType === 'add' ? 'Simpan & selesai' : 'Simpan perubahan'}</button>
+              <button className="win95-btn" disabled={savingTask} onClick={requestCloseTaskDialog}>Batal</button>
+              <div className="desktop-only-hint task-save-shortcut">Ctrl+Enter: simpan & selesai{dialogType === 'add' ? ' · Ctrl+Shift+Enter: simpan & tambah lagi' : ''}</div>
             </div>
           </div>
         </div>
@@ -3600,7 +3743,7 @@ export default function MBGPage() {
               </div></fieldset>
               <fieldset className="win95-group"><legend>Shortcuts</legend><div style={{ padding: '6px 8px', fontSize: 11, lineHeight: 1.6 }}>
                 <div><b>R</b> Refresh | <b>F</b> Cari | <b>N</b> Tambah task | <b>D</b> Dashboard | <b>M</b> Monitor | <b>Esc</b> Tutup</div>
-                <div><b>1-4</b> Tab Filter | <b>?</b> Bantuan | <b>Ctrl+Enter</b> Simpan task</div>
+                <div><b>1-4</b> Tab Filter | <b>?</b> Bantuan | <b>Ctrl+Enter</b> Simpan & selesai | <b>Ctrl+Shift+Enter</b> Simpan & tambah lagi</div>
               </div></fieldset>
             </div>
             <div className="win95-dialog-footer"><button className="win95-btn primary" onClick={saveSettings}>OK</button><button className="win95-btn" onClick={() => setDialogType(null)}>Batal</button></div>
@@ -3863,14 +4006,14 @@ export default function MBGPage() {
       {/* ===== CONFIRM DIALOG ===== */}
       {confirmData && (
         <div className="win95-dialog-overlay" role="presentation" onClick={() => { if (!confirmLoading) setConfirmData(null) }}>
-          <div className="win95-dialog" role="dialog" aria-modal="true" style={{ maxWidth: 'min(350px, 95vw)' }} onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
+          <div ref={confirmDialogRef} className="win95-dialog" role="dialog" aria-modal="true" aria-label={confirmData.title} style={{ maxWidth: 'min(350px, 95vw)' }} onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()} onKeyDown={trapDialogFocus}>
             <div className="win95-titlebar"><span className="win95-titlebar-text">{confirmData.title}</span>{!confirmLoading && <button className="win95-titlebar-btn" aria-label="Tutup" onClick={() => setConfirmData(null)}>✕</button>}</div>
             <div className="win95-dialog-body" style={{ display: 'flex', alignItems: 'flex-start' }}><span className="win95-confirm-icon">⚠️</span><span className="win95-confirm-text">{confirmData.message}</span></div>
             <div className="win95-dialog-footer">
               <button className="win95-btn primary" disabled={confirmLoading} onClick={confirmData.onConfirm} style={confirmLoading ? { opacity: 0.6, cursor: 'wait' } : {}}>
-                {confirmLoading ? '⏳ Menghapus...' : 'Ya'}
+                {confirmLoading ? '⏳ Memproses...' : (confirmData.confirmLabel || 'Ya')}
               </button>
-              <button className="win95-btn" disabled={confirmLoading} onClick={() => { if (!confirmLoading) setConfirmData(null) }}>Tidak</button>
+              <button className="win95-btn" data-confirm-cancel disabled={confirmLoading} onClick={() => { if (!confirmLoading) setConfirmData(null) }}>{confirmData.cancelLabel || 'Tidak'}</button>
             </div>
           </div>
         </div>
@@ -4124,6 +4267,7 @@ export default function MBGPage() {
               <ol>
                 <li><b>Tambah tugas.</b> Tekan <b>+ Tugas Baru</b>, isi nama dan pilih kapan dikerjakan. Proyek dan link tidak wajib.</li>
                 <li><b>Tambah tugas ke proyek.</b> Pilih proyek dulu (sidebar atau Monitor), tombolnya berubah jadi <b>+ Tugas di (nama proyek)</b>. Bisa juga klik kanan / tekan lama nama proyek → <b>Tambah Task</b>.</li>
+                <li><b>Banyak tugas sekaligus.</b> Isi tugas pertama lalu tekan <b>Simpan & tambah lagi</b>. Nama/link/deskripsi dikosongkan untuk tugas berikutnya, tetapi proyek, jadwal, dan prioritas tetap. Setiap tugas disimpan terpisah; kalau satu gagal, yang sudah tersimpan tidak hilang.</li>
                 <li><b>Kerjakan tugas yang siap.</b> Tekan <b>Buka link</b> jika ada, lalu kembali ke sini dan tekan <b>Selesai</b> setelah selesai.</li>
                 <li><b>Lihat kapan siap lagi.</b> Tugas berulang pindah ke <b>Menunggu</b>. Tugas satu kali ada di tab <b>Selesai</b>.</li>
               </ol>

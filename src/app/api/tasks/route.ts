@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { Prisma } from '@prisma/client'
 import { db } from '@/lib/db'
 import { requireUser } from '@/lib/auth'
 import { getNextReadyAt, computeStatus } from '@/lib/schedule'
@@ -6,6 +7,7 @@ import { ApiError, handleApiError, parseBody, requireUserId } from '@/lib/api'
 import { taskCreateSchema } from '@/lib/schemas'
 import { getTimezone } from '@/lib/settings'
 import { scheduleInputError } from '@/lib/schedule-input'
+import { matchesCreatedTask, taskRequestId, type TaskCreatePayload } from '@/lib/task-create-request'
 
 export async function GET() {
   try {
@@ -102,41 +104,58 @@ export async function POST(req: NextRequest) {
     const scheduleError = scheduleInputError(input.scheduleType, input.scheduleConfig)
     if (scheduleError) throw new ApiError(400, scheduleError, 'INVALID_SCHEDULE')
 
-    // BUG FIX: Wrap position lookup + create in transaction to prevent race condition
-    const task = await db.$transaction(async (tx) => {
+    const payload: TaskCreatePayload = {
+      name: input.name,
+      description: input.description,
+      link: input.link,
+      notes: input.notes,
+      scheduleType: input.scheduleType,
+      scheduleConfig: input.scheduleConfig,
+      projectId: input.projectId,
+      pinned: input.pinned,
+      priority: input.priority,
+    }
+    // Tanpa clientRequestId (klien lama) tetap pakai cuid seperti sebelumnya.
+    const requestId = input.clientRequestId ? taskRequestId(userId, input.clientRequestId) : null
+    const createData = {
+      ...(requestId ? { id: requestId } : {}),
+      userId,
+      ...payload,
+      scheduleConfig: JSON.stringify(payload.scheduleConfig),
+    }
+
+    const create = async () => db.$transaction(async (tx) => {
+      // Verifikasi kepemilikan project sebelum menulis (cegah task lintas user).
+      if (payload.projectId) {
+        const project = await tx.project.findFirst({ where: { id: payload.projectId, userId } })
+        if (!project) throw new ApiError(404, 'Project tidak ditemukan', 'PROJECT_NOT_FOUND')
+      }
       const maxPos = await tx.task.findFirst({
         where: { userId },
         orderBy: { position: 'desc' },
         select: { position: true },
       })
-
-      // Verifikasi kepemilikan project (cegah menempelkan task ke project user lain)
-      if (input.projectId) {
-        const project = await tx.project.findFirst({ where: { id: input.projectId, userId } })
-        if (!project) {
-          throw new ApiError(404, 'Project tidak ditemukan', 'PROJECT_NOT_FOUND')
-        }
-      }
-
       return tx.task.create({
-        data: {
-          userId,
-          name: input.name,
-          description: input.description,
-          link: input.link,
-          notes: input.notes,
-          scheduleType: input.scheduleType,
-          scheduleConfig: JSON.stringify(input.scheduleConfig),
-          projectId: input.projectId,
-          pinned: input.pinned,
-          priority: input.priority,
-          position: (maxPos?.position || 0) + 1,
-        },
+        data: { ...createData, position: (maxPos?.position || 0) + 1 },
         include: { project: true },
       })
     })
 
-    return NextResponse.json(task, { status: 201 })
+    try {
+      const task = await create()
+      return NextResponse.json(task, { status: 201 })
+    } catch (e) {
+      // Respons pertama bisa hilang di jaringan setelah DB commit. Retry dengan
+      // kunci yang sama harus mengembalikan task yang sama, bukan membuat baru.
+      // P2002 ditangani DI LUAR transaksi karena transaksi yang gagal sudah abort.
+      if (!requestId || !(e instanceof Prisma.PrismaClientKnownRequestError) || e.code !== 'P2002') throw e
+      const existing = await db.task.findFirst({ where: { id: requestId, userId }, include: { project: true } })
+      if (!existing) throw new ApiError(409, 'Kunci percobaan simpan bentrok. Muat ulang lalu coba lagi.', 'REQUEST_ID_CONFLICT')
+      if (!matchesCreatedTask(existing, payload)) {
+        throw new ApiError(409, 'Tugas dari percobaan ini sudah tersimpan dengan isi berbeda. Muat ulang daftar sebelum mengubahnya.', 'REQUEST_PAYLOAD_CONFLICT')
+      }
+      return NextResponse.json(existing, { status: 200 })
+    }
   } catch (e) {
     return handleApiError(ctx, e)
   }

@@ -2325,7 +2325,16 @@ button:disabled {
 }
 .v3-projrow { width: 100%; background: transparent; border: 0; border-bottom: 1px dotted #b0b0b0; font-family: inherit; text-align: left; }
 /* Form tugas dan target sentuh */
-.task-form-dialog { width: min(520px, 95vw); max-width: 95vw; }
+.task-form-dialog { width: min(520px, 95vw); max-width: 95vw; scroll-padding-bottom: 132px; }
+/* Fieldset pembungkus form: reset gaya bawaan browser supaya tetap seperti
+   dialog Win95, tetapi saat disabled seluruh isian ikut terkunci selama simpan. */
+.task-form-fields { border: 0; margin: 0; min-width: 0; }
+.task-form-fields:disabled { opacity: 0.72; }
+.task-save-progress, .task-defaults-hint { margin: 8px 16px 0; padding: 6px 8px; font-size: 12px; line-height: 1.4; border: 1px solid; }
+.task-save-progress { background: #e6ffe6; border-color: #006400; color: #004d00; }
+.task-defaults-hint { background: #ffffe1; border-color: #808000; color: #404000; }
+.task-form-footer { flex-wrap: wrap; align-items: center; }
+.task-save-shortcut { flex: 1 1 100%; font-size: 10px; color: #4a4a4a; text-align: right; }
 .task-form-dialog .win95-field label { font-size: 12px; color: #202020; }
 .task-form-dialog .win95-input, .task-form-dialog .win95-select, .task-form-dialog .win95-textarea { font-size: 14px; }
 .task-form-dialog .hint { color: #303030; font-size: 12px; line-height: 1.45; }
@@ -2335,8 +2344,8 @@ button:disabled {
 @media (max-width: 760px) {
   .v3-btn, .v3-seg button, .v3-side-item { min-height: 36px; }
   .v3-check { width: 20px; height: 20px; flex-basis: 20px; }
-  .task-form-dialog .win95-input, .task-form-dialog .win95-select { min-height: 38px; }
-  .task-form-dialog .win95-btn { min-height: 40px; }
+  .task-form-dialog .win95-input, .task-form-dialog .win95-select { min-height: 44px; }
+  .task-form-dialog .win95-btn { min-height: 44px; }
   .task-form-dialog .win95-dialog-footer { position: sticky; bottom: 0; background: var(--win95-bg); border-top: 1px solid #808080; }
 }
 .task-more { margin: 9px 0; border: 1px solid #808080; padding: 8px; }
@@ -2824,5 +2833,21 @@ button:disabled {
   .task-form-dialog .win95-input,
   .task-form-dialog .win95-select {
     min-height: var(--touch-min);
+  }
+
+  /* Target sentuh dialog tugas: tombol, ringkasan details, dan label prioritas
+     sama-sama minimal 44px supaya tidak mudah salah tekan di HP. */
+  .task-form-dialog .win95-btn,
+  .task-form-dialog .win95-titlebar-btn,
+  .task-more summary,
+  .schedule-more summary,
+  .task-priority label {
+    min-height: var(--touch-min);
+  }
+  .task-more summary,
+  .schedule-more summary,
+  .task-priority label {
+    display: flex;
+    align-items: center;
   }
 }
