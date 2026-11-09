@@ -145,11 +145,15 @@ export function getNextReadyAt(task: ScheduleTask, timezone?: string): Date | nu
       // Jika hari target masih di depan dan belum ada log, tunggu hari itu.
       if (!lastLog && targetDay > day && (!createdAt || createdAt > mostRecent)) return new Date(midnight.getTime() + nextOffset * 86400000)
       if (!lastLog || lastLog < mostRecent) return now
-      // Hormati cooldown lama jika lebih panjang dari sisa minggu.
+      // Siap pada hari target berikutnya, tapi tidak lebih cepat dari jeda
+      // minimum. Dulu kalau jeda melewati tengah malam target, hasilnya
+      // ditambah SATU MINGGU penuh: tugas mingguan Senin yang dikerjakan
+      // Minggu 23:00 dengan jeda 24 jam baru siap Senin depan depannya lagi
+      // (169 jam), padahal seharusnya Senin 23:00 (24 jam). Yang benar adalah
+      // mengambil yang paling akhir antara hari target dan akhir jeda.
       const cdHours = Number(config.cooldownHours) > 0 ? Number(config.cooldownHours) : 24
       const cooldownEnd = new Date(lastLog.getTime() + cdHours * 3600000)
-      if (cooldownEnd > next) next.setTime(next.getTime() + 7 * 86400000)
-      return next
+      return cooldownEnd > next ? cooldownEnd : next
     }
 
     case 'jam_tertentu': {

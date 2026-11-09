@@ -32,6 +32,7 @@ import { getTimezone, resolveSettings } from '@/lib/settings'
 import { sendTelegramMessage } from '@/lib/telegram'
 import webpush from 'web-push'
 import { isAllowedPushEndpoint } from './push-endpoint'
+import { isNotificationCandidate } from './notify-eligible'
 
 const VAPID_PUBLIC = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || ''
 const VAPID_PRIVATE = process.env.VAPID_PRIVATE_KEY || ''
@@ -117,9 +118,12 @@ export async function sweepUserNotifications(userId: string): Promise<SweepResul
     return { usersChecked: 1, sent: 0, errors: 0, skipped: 'semua-channel-mati' }
   }
 
-  // Hanya task berulang yang punya cooldown yang relevan untuk notifikasi.
+  // Tugas terjadwal ikut diperiksa walau belum pernah diselesaikan: dulu
+  // syarat `logs: { some: {} }` membuat tugas baru tidak pernah dikabari pada
+  // siklus pertamanya (lihat lib/notify-eligible.ts). Tugas "Sekali" tetap
+  // dikecualikan karena selalu siap sejak dibuat.
   const tasks = await db.task.findMany({
-    where: { userId: user.id, scheduleType: { not: 'sekali' }, logs: { some: {} } },
+    where: { userId: user.id, scheduleType: { not: 'sekali' } },
     include: {
       project: { select: { name: true } },
       logs: { orderBy: { completedAt: 'desc' }, take: 1 },
@@ -134,6 +138,12 @@ export async function sweepUserNotifications(userId: string): Promise<SweepResul
     if (!nextReady) continue
 
     const msUntilReady = nextReady.getTime() - now
+    if (!isNotificationCandidate(
+      { scheduleType: task.scheduleType, hasLogs: task.logs.length > 0 },
+      true,
+      msUntilReady,
+    )) continue
+
     const projName = task.project ? `[${escHtml(task.project.name)}] ` : ''
     const taskLabel = `${projName}${escHtml(task.name)}`
 

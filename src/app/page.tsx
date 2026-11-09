@@ -8,6 +8,7 @@ import { NO_PROJECT_FILTER, PRIORITY_DOT, PRIORITY_LABEL, SCHEDULE_LABELS, coold
 import { canonicalJson, cloneTaskDefaults, emptyTaskForm, isTaskFormDirty, newTaskRequestId, readTaskDefaults, rememberTaskDefaults, taskDefaultsKey, taskFormSnapshot, type TaskFormDefaults, type TaskFormSnapshot } from '@/lib/task-form'
 import { showProjectOnCard, taskCardActions, taskCardStatusText } from '@/lib/task-card'
 import { activeOnly, countDone, countForTab, tasksForTab } from '@/lib/task-counts'
+import { refreshCachedTasks } from '@/lib/task-cache'
 
 /* ===== Types ===== */
 interface Note {
@@ -546,10 +547,10 @@ export default function MBGPage() {
       // Cache older than 24h is considered stale — skip
       if (Date.now() - cache.ts > 86400000) return false
       if (cache.tasks) {
-        const mapped = (cache.tasks as Task[]).map((t: Task) => ({
-          ...t,
-          cooldownMs: t.nextReadyAt ? Math.max(0, new Date(t.nextReadyAt).getTime() - Date.now()) : 0
-        }))
+        // Status ikut dihitung ulang, bukan hanya cooldownMs: cache berumur
+        // beberapa jam bisa masih menulis "Menunggu 5j 0m" untuk tugas yang sudah
+        // siap, dan tombol kartu jadi "Lihat detail" bukan "Buka link".
+        const mapped = refreshCachedTasks(cache.tasks as Task[])
         tasksCacheRef.current = mapped
         setTasks(mapped)
       }

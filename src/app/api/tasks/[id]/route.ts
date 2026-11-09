@@ -3,6 +3,7 @@ import { db } from '@/lib/db'
 import { ApiError, handleApiError, parseBody, requireUserId } from '@/lib/api'
 import { taskUpdateSchema } from '@/lib/schemas'
 import { scheduleInputError } from '@/lib/schedule-input'
+import { scheduleActuallyChanged } from '@/lib/schedule-change'
 
 export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const ctx = 'PUT /api/tasks/[id]'
@@ -27,9 +28,11 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
       if (!project) throw new ApiError(404, 'Project tidak ditemukan', 'PROJECT_NOT_FOUND')
     }
 
-    // Reset penanda notifikasi kalau jadwal berubah, supaya siklus cooldown
-    // berikutnya tetap mengirim notifikasi.
-    const scheduleChanged = input.scheduleType !== undefined || input.scheduleConfig !== undefined
+    // Reset penanda notifikasi hanya kalau jadwalnya BENAR-BENAR berubah.
+    // Form edit selalu mengirim scheduleType + scheduleConfig walau yang diubah
+    // cuma nama; memakai "ada key-nya" membuat ganti nama mengirim ulang
+    // notifikasi "Task siap!" untuk kejadian yang sama.
+    const scheduleChanged = scheduleActuallyChanged(existing, input)
 
     const task = await db.task.update({
       where: { id },
