@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   EMPTY_TASK_DEFAULTS,
+  attemptIsSettled,
   canonicalJson,
   cloneTaskDefaults,
   emptyTaskForm,
   isTaskFormDirty,
   newTaskRequestId,
+  nextSaveAttempt,
   readTaskDefaults,
   rememberTaskDefaults,
   taskDefaultsKey,
@@ -159,5 +161,62 @@ describe('newTaskRequestId', () => {
     expect(a).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
     expect(b).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
     expect(a).not.toBe(b)
+  })
+})
+
+describe('nextSaveAttempt — tombol Simpan tidak boleh terkunci setelah respons hilang', () => {
+  const fp = (name: string) => `{"name":"${name}"}`
+
+  it('percobaan pertama memakai kunci baru', () => {
+    const a = nextSaveAttempt(null, fp('A'), () => 'key-1')
+    expect(a).toEqual({ key: 'key-1', fingerprint: fp('A') })
+  })
+
+  it('retry dengan isi sama memakai kunci yang sama supaya tidak menggandakan tugas', () => {
+    const first = nextSaveAttempt(null, fp('A'), () => 'key-1')
+    const retry = nextSaveAttempt(first, fp('A'), () => 'key-2')
+    expect(retry.key).toBe('key-1')
+  })
+
+  it('isi diubah setelah gagal → percobaan baru, bukan 409 selamanya', () => {
+    const first = nextSaveAttempt(null, fp('A'), () => 'key-1')
+    const edited = nextSaveAttempt(first, fp('B'), () => 'key-2')
+    expect(edited.key).toBe('key-2')
+    expect(edited.fingerprint).toBe(fp('B'))
+  })
+
+  it('setelah sukses (percobaan dilepas) isi yang sama tetap dapat kunci baru', () => {
+    expect(nextSaveAttempt(null, fp('A'), () => 'key-3').key).toBe('key-3')
+  })
+})
+
+describe('attemptIsSettled', () => {
+  it('konflik isi/key berarti percobaan lama sudah tersimpan → kunci harus dilepas', () => {
+    expect(attemptIsSettled('REQUEST_PAYLOAD_CONFLICT')).toBe(true)
+    expect(attemptIsSettled('REQUEST_ID_CONFLICT')).toBe(true)
+  })
+
+  it('error lain tidak melepas kunci supaya retry tetap idempoten', () => {
+    for (const code of ['INVALID_SCHEDULE', 'PROJECT_NOT_FOUND', undefined, null, '']) {
+      expect(attemptIsSettled(code)).toBe(false)
+    }
+  })
+})
+
+describe('newTaskRequestId', () => {
+  it('selalu menghasilkan UUID yang sah', () => {
+    for (let i = 0; i < 20; i++) {
+      expect(newTaskRequestId()).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+    }
+  })
+
+  it('tetap jalan di browser tanpa Web Crypto sama sekali', () => {
+    const asli = globalThis.crypto
+    try {
+      Object.defineProperty(globalThis, 'crypto', { value: undefined, configurable: true })
+      expect(newTaskRequestId()).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-a[0-9a-f]{3}-[0-9a-f]{12}$/)
+    } finally {
+      Object.defineProperty(globalThis, 'crypto', { value: asli, configurable: true })
+    }
   })
 })

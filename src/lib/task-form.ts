@@ -86,10 +86,53 @@ export function isTaskFormDirty(form: TaskFormSnapshot, baseline: string): boole
   return taskFormSnapshot(form) !== baseline
 }
 
+/**
+ * Satu percobaan simpan: kunci idempoten + sidik jari isi yang dikirim.
+ *
+ * KENAPA PERLU SIDIK JARI
+ * -----------------------
+ * Setelah respons hilang di jaringan, kunci sengaja dipertahankan supaya retry
+ * dengan isi yang sama tidak menggandakan tugas. Tapi kalau pengguna lalu
+ * MENGUBAH isiannya dan menekan Simpan lagi, kunci lama terkirim bersama isi
+ * baru; server menolaknya dengan REQUEST_PAYLOAD_CONFLICT dan kunci itu tidak
+ * pernah dilepas. Akibatnya tombol Simpan gagal terus dengan pesan yang sama
+ * sampai dialog ditutup — persis keluhan "tambah tugas tidak bisa disimpan".
+ *
+ * Isi sama → kunci sama (tetap idempoten). Isi berubah → percobaan baru.
+ */
+export interface SaveAttempt {
+  key: string
+  fingerprint: string
+}
+
+export function nextSaveAttempt(
+  current: SaveAttempt | null,
+  fingerprint: string,
+  makeKey: () => string = newTaskRequestId,
+): SaveAttempt {
+  if (current && current.fingerprint === fingerprint) return current
+  return { key: makeKey(), fingerprint }
+}
+
+/**
+ * Server sudah memastikan percobaan itu tersimpan (isinya berbeda / kunci
+ * bentrok). Percobaan lama harus dilepas supaya Simpan berikutnya tidak
+ * mengulang penolakan yang sama selamanya.
+ */
+export function attemptIsSettled(errorCode: unknown): boolean {
+  return errorCode === 'REQUEST_PAYLOAD_CONFLICT' || errorCode === 'REQUEST_ID_CONFLICT'
+}
+
 /** UUID v4 untuk kunci idempoten; fallback untuk browser tanpa randomUUID(). */
 export function newTaskRequestId(): string {
   const c = globalThis.crypto
-  if (typeof c.randomUUID === 'function') return c.randomUUID()
+  if (c && typeof c.randomUUID === 'function') return c.randomUUID()
+  if (!c || typeof c.getRandomValues !== 'function') {
+    // Sangat tua / WebView tanpa Web Crypto. Kunci ini bukan rahasia, hanya
+    // penanda percobaan; lebih baik bisa menyimpan daripada tombol mati total.
+    const hex = (n: number) => Array.from({ length: n }, () => Math.floor(Math.random() * 16).toString(16)).join('')
+    return `${hex(8)}-${hex(4)}-4${hex(3)}-a${hex(3)}-${hex(12)}`
+  }
   const bytes = c.getRandomValues(new Uint8Array(16))
   bytes[6] = (bytes[6] & 0x0f) | 0x40
   bytes[8] = (bytes[8] & 0x3f) | 0x80

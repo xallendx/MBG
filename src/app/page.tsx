@@ -5,7 +5,7 @@ import { isSafeHttpUrl } from '@/lib/safe-url'
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { scheduleInputError } from '@/lib/schedule-input'
 import { NO_PROJECT_FILTER, PRIORITY_DOT, PRIORITY_LABEL, SCHEDULE_LABELS, cooldownColor, cooldownIcon, priorityDot, priorityLabel, projectFilterAfterAdd, projectIdForNewTask, scheduleLabel } from '@/lib/task-view'
-import { canonicalJson, cloneTaskDefaults, emptyTaskForm, isTaskFormDirty, newTaskRequestId, readTaskDefaults, rememberTaskDefaults, taskDefaultsKey, taskFormSnapshot, type TaskFormDefaults, type TaskFormSnapshot } from '@/lib/task-form'
+import { attemptIsSettled, canonicalJson, cloneTaskDefaults, emptyTaskForm, isTaskFormDirty, nextSaveAttempt, readTaskDefaults, rememberTaskDefaults, taskDefaultsKey, taskFormSnapshot, type SaveAttempt, type TaskFormDefaults, type TaskFormSnapshot } from '@/lib/task-form'
 import { showProjectOnCard, taskCardActions, taskCardStatusText } from '@/lib/task-card'
 import { activeOnly, countDone, countForTab, tasksForTab } from '@/lib/task-counts'
 import { refreshCachedTasks } from '@/lib/task-cache'
@@ -246,7 +246,7 @@ export default function MBGPage() {
   // Opsi A: satu tugas = satu konfirmasi server. Ref mengunci klik ganda bahkan
   // sebelum React sempat merender ulang tombol disabled.
   const savingTaskRef = useRef(false)
-  const taskRequestRef = useRef<string | null>(null)
+  const taskRequestRef = useRef<SaveAttempt | null>(null)
   const taskDefaultsRef = useRef(new Map<string, TaskFormDefaults>())
   const taskDraftBaselineRef = useRef('')
   const taskDialogRef = useRef<HTMLDivElement>(null)
@@ -1433,18 +1433,28 @@ export default function MBGPage() {
       scheduleType: form.scheduleType, scheduleConfig: JSON.parse(canonicalJson(form.scheduleConfig)) as Record<string, unknown>,
       projectId: form.projectId, priority: form.priority,
     }
-    if (isAdd && !taskRequestRef.current) taskRequestRef.current = newTaskRequestId()
+    // Isi sama → kunci sama (retry tidak menggandakan). Isi berubah setelah
+    // percobaan gagal → percobaan baru, supaya tidak terkunci di penolakan 409.
+    if (isAdd) taskRequestRef.current = nextSaveAttempt(taskRequestRef.current, canonicalJson(payload))
     setTaskFormError('')
     savingTaskRef.current = true
     setSavingTask(true)
     try {
       const res = await api(isAdd ? '/api/tasks' : `/api/tasks/${editId}`, jsonOpts(isAdd ? 'POST' : 'PUT', {
-        ...payload, ...(isAdd ? { clientRequestId: taskRequestRef.current } : {}),
+        ...payload, ...(isAdd ? { clientRequestId: taskRequestRef.current?.key } : {}),
       }))
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
+        if (attemptIsSettled(err.code)) {
+          // Percobaan sebelumnya ternyata sudah tersimpan. Lepas kuncinya supaya
+          // tombol Simpan tidak menolak terus dengan pesan yang sama.
+          taskRequestRef.current = null
+          setTaskFormError('Tugas dari percobaan sebelumnya sudah tersimpan (koneksi mungkin terputus). Daftar sedang diperbarui — periksa dulu. Tekan Simpan lagi hanya kalau ini memang tugas yang berbeda.')
+          lastWriteTime.current = 0
+          void fetchData(false, true)
+          return
+        }
         setTaskFormError(err.error || 'Tugas tidak tersimpan. Periksa data dan coba lagi.')
-        if (err.code === 'REQUEST_PAYLOAD_CONFLICT') { lastWriteTime.current = 0; void fetchData(false, true) }
         return
       }
       // Server sudah konfirmasi. Kunci percobaan selesai; tugas berikutnya wajib
@@ -2393,13 +2403,6 @@ export default function MBGPage() {
   const openSettings = () => { const s = settings as Record<string, unknown>; setFormTimezone(['WIB', 'WITA', 'WIT'].includes(s.timezone as string) ? (s.timezone as string) : 'WIB'); setFormTimeFormat(s.timeFormat === '12' ? '12' : '24'); setFormAutoExpandSiap(s.autoExpandSiap !== false); setFormAutoCompleteLink(s.autoCompleteLink === true); setFormTelegramNotif(s.telegramNotifEnabled !== false); setFormBrowserNotif(s.browserNotifEnabled !== false); setFormNotifyBeforeMin((s.notifyBeforeCooldownMin as number) || 5); setFormAudioAlertEnabled(s.audioAlertEnabled !== false); setDialogType('settings') }
 
   /* ===== Folder toggle ===== */
-  const toggleFolder = (projectId: string) => {
-    setExpandedProjects(prev => {
-      const n = new Set(prev)
-      if (n.has(projectId)) n.delete(projectId); else n.add(projectId)
-      return n
-    })
-  }
 
   /* ===== Project stats helper (excludes archived sekali from active counts) ===== */
   const getProjectStats = (projectId: string) => {
@@ -3157,13 +3160,13 @@ export default function MBGPage() {
                 Semua <span className="v3-count">({countAll})</span>
               </button>
               <button aria-pressed={activeTab === 'siap'} onClick={() => { clearBulk(); setActiveTab('siap') }}>
-                ✓ Siap <span className="v3-count">({countIn('siap')})</span>
+                <span className="v3-tab-icon" aria-hidden="true">✓ </span>Siap <span className="v3-count">({countIn('siap')})</span>
               </button>
               <button aria-pressed={activeTab === 'cooldown'} onClick={() => { clearBulk(); setActiveTab('cooldown') }}>
-                ⏳ Menunggu <span className="v3-count">({countIn('cooldown')})</span>
+                <span className="v3-tab-icon" aria-hidden="true">⏳ </span>Menunggu <span className="v3-count">({countIn('cooldown')})</span>
               </button>
               <button aria-pressed={activeTab === 'selesai'} onClick={() => { clearBulk(); setActiveTab('selesai') }}>
-                ✔ Selesai <span className="v3-count">({countIn('selesai')})</span>
+                <span className="v3-tab-icon" aria-hidden="true">✔ </span>Selesai <span className="v3-count">({countIn('selesai')})</span>
               </button>
             </div>
             <input
@@ -4163,8 +4166,12 @@ export default function MBGPage() {
       )}
 
       {/* ===== CONFIRM DIALOG ===== */}
+      {/* zIndex 5500 > panel catatan (5000): konfirmasi "Hapus catatan" dibuka
+          DARI panel itu. Dengan z-index overlay biasa (200) dialognya terlindung
+          panel; di HP panel 320px menutupi hampir seluruh layar 390px sehingga
+          tombol Ya/Tidak tidak bisa ditekan sama sekali. */}
       {confirmData && (
-        <div className="win95-dialog-overlay" role="presentation" onClick={() => { if (!confirmLoading) setConfirmData(null) }}>
+        <div className="win95-dialog-overlay" style={{ zIndex: 5500 }} role="presentation" onClick={() => { if (!confirmLoading) setConfirmData(null) }}>
           <div ref={confirmDialogRef} className="win95-dialog" role="dialog" aria-modal="true" aria-label={confirmData.title} style={{ maxWidth: 'min(350px, 95vw)' }} onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()} onKeyDown={trapDialogFocus}>
             <div className="win95-titlebar"><span className="win95-titlebar-text">{confirmData.title}</span>{!confirmLoading && <button className="win95-titlebar-btn" aria-label="Tutup" onClick={() => setConfirmData(null)}>✕</button>}</div>
             <div className="win95-dialog-body" style={{ display: 'flex', alignItems: 'flex-start' }}><span className="win95-confirm-icon">⚠️</span><span className="win95-confirm-text">{confirmData.message}</span></div>
@@ -4386,9 +4393,10 @@ export default function MBGPage() {
       {/* ===== PROJECT CONTEXT MENU (Fix #1: clamped, Fix #7: batch complete, Fix #16: sort) ===== */}
       {projectContextMenu && (
         <div ref={projCtxRef} className="win95-context-menu" style={{ left: projectContextMenu.x, top: projectContextMenu.y, zIndex: 6000 }}>
-          <div className="win95-context-item" onClick={() => { toggleFolder(projectContextMenu.project.id); setProjectContextMenu(null) }}>
-            {expandedProjects.has(projectContextMenu.project.id) ? '📁 Collapse' : '📂 Expand'}
-          </div>
+          {/* Item "Collapse/Expand" dihapus: sisa tampilan pohon lama. Sejak
+              daftar tugas jadi kartu + sidebar, tidak ada folder yang bisa
+              dilipat, jadi tombolnya hanya mengganti label tanpa efek apa pun.
+              Menyaring proyek cukup dengan mengklik namanya di sidebar. */}
           <div className="win95-context-item" onClick={() => { openAdd(projectContextMenu.project.id); setProjectContextMenu(null) }}>➕ Tambah Task</div>
           {/* Fix #7: Batch Complete All Ready */}
           <div className={`win95-context-item ${batchCompleting === projectContextMenu.project.id ? 'disabled' : ''}`}
@@ -4593,14 +4601,18 @@ export default function MBGPage() {
                 onChange={e => setNoteFormContent(e.target.value)}
                 style={{ width: '100%', fontSize: 11, marginBottom: 4, resize: 'vertical' }}
               />
-              <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              {/* flexWrap + minWidth:auto wajib: di layar ≥769px .win95-btn punya
+                  min-width 100px, jadi 7 kotak warna + Batal + Simpan melampaui
+                  panel 320px dan tombol Simpan terdorong keluar layar sehingga
+                  catatan yang sedang diedit tidak bisa disimpan. */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
                 {['#FFFFCC', '#FFCCCC', '#CCFFCC', '#CCE5FF', '#E5CCFF', '#FFE5CC', '#FFFFFF'].map(c => (
                   <div key={c} onClick={() => setNoteFormColor(c)}
                     style={{ width: 18, height: 18, background: c, border: noteFormColor === c ? '2px solid #000' : '1px solid #808080', cursor: 'pointer', flexShrink: 0 }} />
                 ))}
                 <div style={{ flex: 1 }} />
-                {editingNoteId && <button className="win95-btn" style={{ fontSize: 10, padding: '1px 8px' }} onClick={() => { setEditingNoteId(null); setNoteFormContent(''); setNoteFormColor('#FFFFCC') }}>Batal</button>}
-                <button className="win95-btn primary" style={{ fontSize: 10, padding: '1px 8px' }} onClick={saveNote}>{editingNoteId ? 'Simpan' : 'Tambah'}</button>
+                {editingNoteId && <button className="win95-btn" style={{ fontSize: 10, padding: '1px 8px', minWidth: 'auto' }} onClick={() => { setEditingNoteId(null); setNoteFormContent(''); setNoteFormColor('#FFFFCC') }}>Batal</button>}
+                <button className="win95-btn primary" style={{ fontSize: 10, padding: '1px 8px', minWidth: 'auto' }} onClick={saveNote}>{editingNoteId ? 'Simpan' : 'Tambah'}</button>
               </div>
             </div>
             {/* Notes list */}
