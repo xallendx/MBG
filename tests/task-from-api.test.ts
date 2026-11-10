@@ -79,6 +79,17 @@ describe('taskFromApi — hasil simpan langsung dipakai tanpa menunggu /api/init
     expect(t!.lastCompletedAt).toBe('2026-11-07T00:00:00.000Z')
   })
 
+  it('deskripsi null/kosong dari server berarti hapus, bukan pertahankan teks lama', () => {
+    const prev = previous({ description: 'deskripsi yang akan dihapus' })
+    expect(taskFromApi(rawCreated({ description: null }), { previous: prev })!.description).toBeNull()
+    expect(taskFromApi(rawCreated({ description: '' }), { previous: prev })!.description).toBeNull()
+  })
+
+  it('kolom deskripsi yang memang tidak dikirim tetap memakai nilai lama', () => {
+    const prev = previous({ description: 'deskripsi lama' })
+    expect(taskFromApi(rawCreated({ description: undefined }), { previous: prev })!.description).toBe('deskripsi lama')
+  })
+
   it('pindah ke tanpa proyek dihormati, bukan memakai proyek lama', () => {
     const prev = previous({ project: { id: 'p1', name: 'Harian', color: '#000080' } })
     const t = taskFromApi(rawCreated({ project: null }), { previous: prev })

@@ -129,7 +129,13 @@ export function taskFromApi(
   return {
     id: raw.id,
     name: raw.name,
-    description: str(raw.description) ?? prev?.description ?? null,
+    // Null / string kosong dari server adalah pengosongan yang disengaja saat edit,
+    // bukan alasan untuk mempertahankan deskripsi lama secara optimistis.
+    description: raw.description === undefined
+      ? prev?.description ?? null
+      : typeof raw.description === 'string' && raw.description.length > 0
+        ? raw.description
+        : null,
     link: str(raw.link) ?? null,
     scheduleType,
     scheduleConfig,

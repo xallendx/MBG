@@ -113,6 +113,26 @@ Tes baru: `task-from-api` (19), `task-complete-route` (11), `cooldown-tick` (11)
 
 ---
 
+## Audit pendalaman (9 November 2026)
+
+Saya telusuri lagi alur edit sampai pemetaan balasan server. Ditemukan satu kasus
+sampingan yang lolos dari penyisiran tombol: ketika deskripsi lama dikosongkan lalu
+form edit disimpan, balasan API berisi `description: null`, tetapi pemetaan optimistis
+menganggap `null` sebagai "kolom tidak dikirim" dan menghidupkan lagi deskripsi lama
+untuk sementara. Sinkronisasi berikutnya biasanya membetulkannya, namun layar terlihat
+seolah pengosongan gagal.
+
+**Sudah diperbaiki:** `taskFromApi()` kini membedakan kolom yang tidak ada (`undefined`;
+pertahankan nilai lama saat edit) dari nilai kosong yang eksplisit (`null` atau string
+kosong; hapus nilai). Dua tes regresi baru mengunci kedua perilaku tersebut.
+
+Validasi perubahan pendalaman: `npx tsc --noEmit` lulus; lint tetap **29 = baseline 29**;
+`npm run build` lulus. Tes pemetaan khusus **21/21 lulus**. Saat menjalankan seluruh
+tes di sandbox ini, **339 tes lulus dan 1 dilewati**, tetapi proses Vitest berakhir gagal
+karena tiga unhandled rejection dari Prisma Query Engine native yang memang tidak ada
+(`libquery_engine-debian-openssl-3.0.x.so.node`) pada sandbox; bukan assertion yang gagal.
+CI PR sebelumnya lulus sebelum dua tes regresi ini ditambahkan.
+
 ## Yang belum bisa dipastikan dari sandbox
 
 - **Latensi produksi sesungguhnya**: angka di atas memakai latensi tiruan. Setelah
