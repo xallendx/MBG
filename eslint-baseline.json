@@ -1,8 +1,8 @@
 {
   "_catatan": "Jumlah error lint yang sudah ada. Dilarang naik. Perbarui dengan: npm run lint:baseline -- --update",
-  "totalError": 30,
+  "totalError": 29,
   "perRule": {
-    "react-hooks/immutability": 14,
+    "react-hooks/immutability": 13,
     "react-hooks/preserve-manual-memoization": 1,
     "react-hooks/refs": 13,
     "react-hooks/set-state-in-effect": 2
